@@ -22,7 +22,6 @@
 
   <!-- Firebase (기기 간 동기화용) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 
   <style>
@@ -38,8 +37,6 @@ const { useState, useEffect, useRef } = React;
 
 // ════════════════════════════════════════════════════════════════
 //  ▼▼▼ Firebase 설정 — 본인 프로젝트 값으로 바꿔 붙여넣으세요 ▼▼▼
-//  (Firebase 콘솔 → 프로젝트 설정(⚙️) → 내 앱 → 웹앱의 firebaseConfig 복사)
-//  여기를 채우지 않으면 동기화 없이 기존처럼 이 기기에만 저장됩니다.
 const firebaseConfig = {
   apiKey: "AIzaSyBdcSKuT3J678mcV9ASsPbixNhVWjJoyN8",
   authDomain: "kosakata-5d7a5.firebaseapp.com",
@@ -48,20 +45,21 @@ const firebaseConfig = {
   messagingSenderId: "421246532982",
   appId: "1:421246532982:web:e922c96c328ebdc5230e57",
 };
-//  ▲▲▲ 여기까지만 바꾸면 됩니다 ▲▲▲
+
+//  ▼▼▼ 나만 아는 동기화 키 — 절대 바꾸지 마세요! ▼▼▼
+//  (이 키 덕분에 로그인 없이 기기끼리 자동으로 맞춰져요)
+const SYNC_ID = "dfe9992d-2d41-4d85-bb97-9fd42e95e98f";
 // ════════════════════════════════════════════════════════════════
 
 const FIREBASE_READY = !!firebaseConfig.apiKey && !firebaseConfig.apiKey.includes("여기에");
-let fbAuth = null, fbDb = null, googleProvider = null;
+let fbDb = null;
 if (FIREBASE_READY) {
   try {
     firebase.initializeApp(firebaseConfig);
-    fbAuth = firebase.auth();
     fbDb = firebase.firestore();
-    googleProvider = new firebase.auth.GoogleAuthProvider();
   } catch (e) { console.error("Firebase 초기화 실패:", e); }
 }
-function deckRef(uid) { return fbDb.collection("decks").doc(uid); }
+function deckRef() { return fbDb.collection("decks").doc(SYNC_ID); }
 
 // ============================================================
 //  인도네시아어 단어 암기 앱 (독립 실행 버전)
@@ -167,8 +165,6 @@ function App() {
   const [view, setView] = useState("home");
   const [dir, setDir] = useState(boot.current.dir);
   const [levelFilter, setLevelFilter] = useState("전체");
-  const [user, setUser] = useState(null);
-  const [sync, setSync] = useState(FIREBASE_READY ? "out" : "off"); // off=미설정 | out=로그아웃 | on=동기화중 | err=오류
   const saveTimer = useRef(null);
   const applyingRemote = useRef(false);
 
@@ -179,51 +175,31 @@ function App() {
     if (d.dir) setDir(d.dir);
   }
 
-  // 로그인 상태 감지
+  // 앱 시작 시 Firestore 연결 — 로그인 없이 자동 동기화
   useEffect(() => {
     if (!FIREBASE_READY) return;
-    fbAuth.getRedirectResult().catch(() => {});
-    return fbAuth.onAuthStateChanged((u) => setUser(u || null));
-  }, []);
-
-  // 로그인되면 클라우드와 연결: 처음엔 클라우드 데이터 우선, 이후 실시간 반영
-  useEffect(() => {
-    if (!FIREBASE_READY) return;
-    if (!user) { setSync("out"); return; }
-    setSync("on");
-    let unsub = () => {};
-    const ref = deckRef(user.uid);
+    const ref = deckRef();
     ref.get().then((snap) => {
       if (snap.exists) applyRemote(snap.data());
       else ref.set({ cards, dir, updatedAt: Date.now() }).catch(() => {});
-      unsub = ref.onSnapshot((doc) => {
-        if (doc.metadata.hasPendingWrites) return; // 내가 방금 쓴 변경은 무시
+      ref.onSnapshot((doc) => {
+        if (doc.metadata.hasPendingWrites) return;
         applyRemote(doc.data());
-      }, () => setSync("err"));
-    }).catch(() => setSync("err"));
-    return () => unsub();
-  }, [user]);
+      }, () => {});
+    }).catch(() => {});
+  }, []);
 
-  // ---- 변경 시 저장: 항상 로컬, 로그인 시 클라우드까지 ----
+  // 변경 시 저장: 로컬 + 클라우드 자동
   useEffect(() => {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      try { localStorage.setItem(STORE_KEY, JSON.stringify({ cards, dir })); }
-      catch (e) { /* 저장 실패는 조용히 무시 */ }
-      if (FIREBASE_READY && user && !applyingRemote.current) {
-        deckRef(user.uid).set({ cards, dir, updatedAt: Date.now() }).catch(() => {});
+      try { localStorage.setItem(STORE_KEY, JSON.stringify({ cards, dir })); } catch (e) {}
+      if (FIREBASE_READY && !applyingRemote.current) {
+        deckRef().set({ cards, dir, updatedAt: Date.now() }).catch(() => {});
       }
       applyingRemote.current = false;
     }, 400);
-  }, [cards, dir, user]);
-
-  function signIn() {
-    if (!FIREBASE_READY) return;
-    fbAuth.signInWithPopup(googleProvider).catch(() => {
-      try { fbAuth.signInWithRedirect(googleProvider); } catch (e) {}
-    });
-  }
-  function signOut() { if (FIREBASE_READY) fbAuth.signOut(); }
+  }, [cards, dir]);
 
   const levels = ["전체", ...cards.map((c) => c.level).filter((v, i, a) => v && a.indexOf(v) === i)];
   if (levelFilter !== "전체" && !levels.includes(levelFilter)) {
@@ -267,7 +243,6 @@ function App() {
 
       <div style={{ maxWidth: 460, margin: "0 auto", padding: "20px 18px 64px" }}>
         <Header view={view} setView={setView} />
-        <SyncBar user={user} sync={sync} signIn={signIn} signOut={signOut} />
         {view === "home" && <Home stats={stats} setView={setView} dir={dir} setDir={setDir} levels={levels} levelFilter={levelFilter} setLevelFilter={setLevelFilter} />}
         {view === "study" && (
           <Study cards={scoped} setCards={setCards} dir={dir} back={() => setView("home")} />
@@ -301,37 +276,6 @@ function Header({ view, setView }) {
           ← 홈
         </button>
       )}
-    </div>
-  );
-}
-
-function SyncBar({ user, sync, signIn, signOut }) {
-  if (sync === "off") return null; // Firebase 미설정이면 표시 안 함
-  const wrap = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-    background: C.paper, border: `1px solid ${C.line}`, borderRadius: 999, padding: "7px 8px 7px 14px", marginBottom: 16 };
-  if (!user) {
-    return (
-      <div style={wrap}>
-        <span style={{ color: C.muted, fontSize: 12.5 }}>기기끼리 진도 동기화</span>
-        <button onClick={signIn} className="pressable"
-          style={{ border: "none", background: C.teal, color: "#fff", borderRadius: 999, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
-          Google로 로그인
-        </button>
-      </div>
-    );
-  }
-  return (
-    <div style={wrap}>
-      <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-        <span style={{ width: 8, height: 8, borderRadius: 99, background: sync === "err" ? C.red : C.green, flexShrink: 0 }} />
-        <span style={{ fontSize: 12.5, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {sync === "err" ? "동기화 오류" : "동기화 중"} · {user.email}
-        </span>
-      </span>
-      <button onClick={signOut} className="pressable"
-        style={{ border: `1px solid ${C.line}`, background: "transparent", color: C.muted, borderRadius: 999, padding: "6px 12px", fontSize: 12, cursor: "pointer", flexShrink: 0 }}>
-        로그아웃
-      </button>
     </div>
   );
 }
