@@ -1,0 +1,872 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Kosakata · 인도네시아어 단어 암기</title>
+
+  <!-- 모바일 홈 화면 추가용 설정 -->
+  <meta name="theme-color" content="#185C58" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Kosakata" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="icon" href="/icon-192.png" />
+
+  <!-- React + Babel (빌드 과정 없이 브라우저에서 바로 실행) -->
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js" crossorigin></script>
+
+  <!-- Firebase (기기 간 동기화용) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+  <style>
+    html, body { margin: 0; background: #F8F1E4; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useRef } = React;
+
+// ════════════════════════════════════════════════════════════════
+//  ▼▼▼ Firebase 설정 — 본인 프로젝트 값으로 바꿔 붙여넣으세요 ▼▼▼
+//  (Firebase 콘솔 → 프로젝트 설정(⚙️) → 내 앱 → 웹앱의 firebaseConfig 복사)
+//  여기를 채우지 않으면 동기화 없이 기존처럼 이 기기에만 저장됩니다.
+const firebaseConfig = {
+  apiKey: "AIzaSyBdcSKuT3J678mcV9ASsPbixNhVWjJoyN8",
+  authDomain: "kosakata-5d7a5.firebaseapp.com",
+  projectId: "kosakata-5d7a5",
+  storageBucket: "kosakata-5d7a5.firebasestorage.app",
+  messagingSenderId: "421246532982",
+  appId: "1:421246532982:web:e922c96c328ebdc5230e57",
+};
+//  ▲▲▲ 여기까지만 바꾸면 됩니다 ▲▲▲
+// ════════════════════════════════════════════════════════════════
+
+const FIREBASE_READY = !!firebaseConfig.apiKey && !firebaseConfig.apiKey.includes("여기에");
+let fbAuth = null, fbDb = null, googleProvider = null;
+if (FIREBASE_READY) {
+  try {
+    firebase.initializeApp(firebaseConfig);
+    fbAuth = firebase.auth();
+    fbDb = firebase.firestore();
+    googleProvider = new firebase.auth.GoogleAuthProvider();
+  } catch (e) { console.error("Firebase 초기화 실패:", e); }
+}
+function deckRef(uid) { return fbDb.collection("decks").doc(uid); }
+
+// ============================================================
+//  인도네시아어 단어 암기 앱 (독립 실행 버전)
+//  핵심 원리: 능동 인출(Active Recall) + 분산 반복(Leitner SRS)
+//  저장: 이 브라우저(기기)의 localStorage 에 보관됩니다.
+// ============================================================
+
+const SEED = [
+  { id: "selamat pagi", ko: "좋은 아침", ex: "Selamat pagi, Bu!", exKo: "좋은 아침이에요, 선생님!" },
+  { id: "terima kasih", ko: "감사합니다", ex: "Terima kasih banyak.", exKo: "정말 감사합니다." },
+  { id: "maaf", ko: "미안합니다", ex: "Maaf, saya terlambat.", exKo: "미안해요, 늦었어요." },
+  { id: "tolong", ko: "부탁해요 / 도와주세요", ex: "Tolong bantu saya.", exKo: "저를 좀 도와주세요." },
+  { id: "ya", ko: "네", ex: "", exKo: "" },
+  { id: "tidak", ko: "아니요 / ~않다", ex: "Saya tidak tahu.", exKo: "저는 몰라요." },
+  { id: "nama", ko: "이름", ex: "Siapa nama kamu?", exKo: "네 이름이 뭐야?" },
+  { id: "apa", ko: "무엇", ex: "Ini apa?", exKo: "이게 뭐예요?" },
+  { id: "siapa", ko: "누구", ex: "Siapa dia?", exKo: "그 사람 누구야?" },
+  { id: "di mana", ko: "어디", ex: "Di mana toilet?", exKo: "화장실이 어디예요?" },
+  { id: "saya", ko: "나 / 저", ex: "Saya guru.", exKo: "저는 선생님이에요." },
+  { id: "kamu", ko: "너", ex: "Kamu baik-baik saja?", exKo: "너 괜찮아?" },
+  { id: "dia", ko: "그 / 그녀", ex: "Dia teman saya.", exKo: "그는 제 친구예요." },
+  { id: "kita", ko: "우리(듣는 사람 포함)", ex: "", exKo: "" },
+  { id: "mereka", ko: "그들", ex: "", exKo: "" },
+  { id: "satu", ko: "하나 (1)", ex: "", exKo: "" },
+  { id: "dua", ko: "둘 (2)", ex: "", exKo: "" },
+  { id: "tiga", ko: "셋 (3)", ex: "", exKo: "" },
+  { id: "empat", ko: "넷 (4)", ex: "", exKo: "" },
+  { id: "lima", ko: "다섯 (5)", ex: "", exKo: "" },
+  { id: "makan", ko: "먹다", ex: "Saya mau makan.", exKo: "저는 먹고 싶어요." },
+  { id: "minum", ko: "마시다", ex: "Minum air putih.", exKo: "맹물을 마셔요." },
+  { id: "air", ko: "물", ex: "", exKo: "" },
+  { id: "nasi", ko: "밥", ex: "Nasi goreng enak.", exKo: "나시고렝은 맛있어요." },
+  { id: "enak", ko: "맛있다", ex: "Ini enak sekali!", exKo: "이거 정말 맛있어요!" },
+  { id: "pergi", ko: "가다", ex: "Saya pergi ke pasar.", exKo: "저는 시장에 가요." },
+  { id: "datang", ko: "오다", ex: "Dia datang besok.", exKo: "그는 내일 와요." },
+  { id: "tidur", ko: "자다", ex: "Saya mau tidur.", exKo: "저는 자고 싶어요." },
+  { id: "belajar", ko: "공부하다", ex: "Saya belajar bahasa Indonesia.", exKo: "저는 인도네시아어를 공부해요." },
+  { id: "bekerja", ko: "일하다", ex: "", exKo: "" },
+  { id: "membaca", ko: "읽다", ex: "Saya suka membaca.", exKo: "저는 읽는 것을 좋아해요." },
+  { id: "berbicara", ko: "말하다", ex: "", exKo: "" },
+  { id: "besar", ko: "크다", ex: "Rumah ini besar.", exKo: "이 집은 커요." },
+  { id: "kecil", ko: "작다", ex: "", exKo: "" },
+  { id: "baik", ko: "좋다 / 착하다", ex: "Apa kabar? Baik.", exKo: "잘 지내요? 잘 지내요." },
+  { id: "bagus", ko: "멋지다 / 훌륭하다", ex: "", exKo: "" },
+  { id: "baru", ko: "새롭다", ex: "Tas baru.", exKo: "새 가방." },
+  { id: "hari ini", ko: "오늘", ex: "Hari ini panas.", exKo: "오늘은 더워요." },
+  { id: "besok", ko: "내일", ex: "Sampai besok!", exKo: "내일 봐요!" },
+  { id: "sekarang", ko: "지금", ex: "", exKo: "" },
+  { id: "rumah", ko: "집", ex: "Ini rumah saya.", exKo: "여기가 제 집이에요." },
+  { id: "sekolah", ko: "학교", ex: "Saya ke sekolah.", exKo: "저는 학교에 가요." },
+  { id: "pasar", ko: "시장", ex: "", exKo: "" },
+  { id: "jalan", ko: "길 / 걷다", ex: "Jalan-jalan, yuk!", exKo: "산책 가자!" },
+];
+
+const INTERVALS = { 1: 1, 2: 3, 3: 7, 4: 14, 5: 30 };
+const DAY = 86400000;
+const STORE_KEY = "indo_vocab_v2";
+
+function makeCards(seed) {
+  return seed.map((w, i) => ({
+    key: "c" + i + "_" + Date.now() + Math.random().toString(36).slice(2, 6),
+    id: w.id, ko: w.ko, ex: w.ex || "", exKo: w.exKo || "",
+    level: w.level || "BIPA 1",
+    box: 0,
+    next: 0,
+  }));
+}
+
+// localStorage 에서 불러오기 (없으면 기본 단어로 시작)
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      const cards = (data.cards || makeCards(SEED)).map((c) => ({ ...c, level: c.level || "BIPA 1" }));
+      return { cards, dir: data.dir || "id-ko" };
+    }
+  } catch (e) { /* 첫 실행 또는 손상된 데이터 */ }
+  return { cards: makeCards(SEED), dir: "id-ko" };
+}
+
+function isDue(c, now) { return c.next <= now; }
+function bucket(c) {
+  if (c.box === 0) return "new";
+  if (c.box <= 3) return "learning";
+  return "mastered";
+}
+
+const C = {
+  cream: "#F8F1E4", paper: "#FFFDF8", ink: "#2B2420", muted: "#9A8C79",
+  clay: "#C25A38", clayDark: "#A4452A", teal: "#185C58", gold: "#D6A23E",
+  line: "#E7DCC8", green: "#3E8E6B", red: "#C25A38",
+};
+
+const FONTS = `
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Hanken+Grotesk:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap');
+`;
+
+function App() {
+  const boot = useRef(null);
+  if (boot.current === null) boot.current = loadState();
+  const [cards, setCards] = useState(boot.current.cards);
+  const [view, setView] = useState("home");
+  const [dir, setDir] = useState(boot.current.dir);
+  const [levelFilter, setLevelFilter] = useState("전체");
+  const [user, setUser] = useState(null);
+  const [sync, setSync] = useState(FIREBASE_READY ? "out" : "off"); // off=미설정 | out=로그아웃 | on=동기화중 | err=오류
+  const saveTimer = useRef(null);
+  const applyingRemote = useRef(false);
+
+  function applyRemote(d) {
+    if (!d) return;
+    applyingRemote.current = true;
+    if (Array.isArray(d.cards)) setCards(d.cards.map((c) => ({ ...c, level: c.level || "BIPA 1" })));
+    if (d.dir) setDir(d.dir);
+  }
+
+  // 로그인 상태 감지
+  useEffect(() => {
+    if (!FIREBASE_READY) return;
+    fbAuth.getRedirectResult().catch(() => {});
+    return fbAuth.onAuthStateChanged((u) => setUser(u || null));
+  }, []);
+
+  // 로그인되면 클라우드와 연결: 처음엔 클라우드 데이터 우선, 이후 실시간 반영
+  useEffect(() => {
+    if (!FIREBASE_READY) return;
+    if (!user) { setSync("out"); return; }
+    setSync("on");
+    let unsub = () => {};
+    const ref = deckRef(user.uid);
+    ref.get().then((snap) => {
+      if (snap.exists) applyRemote(snap.data());
+      else ref.set({ cards, dir, updatedAt: Date.now() }).catch(() => {});
+      unsub = ref.onSnapshot((doc) => {
+        if (doc.metadata.hasPendingWrites) return; // 내가 방금 쓴 변경은 무시
+        applyRemote(doc.data());
+      }, () => setSync("err"));
+    }).catch(() => setSync("err"));
+    return () => unsub();
+  }, [user]);
+
+  // ---- 변경 시 저장: 항상 로컬, 로그인 시 클라우드까지 ----
+  useEffect(() => {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      try { localStorage.setItem(STORE_KEY, JSON.stringify({ cards, dir })); }
+      catch (e) { /* 저장 실패는 조용히 무시 */ }
+      if (FIREBASE_READY && user && !applyingRemote.current) {
+        deckRef(user.uid).set({ cards, dir, updatedAt: Date.now() }).catch(() => {});
+      }
+      applyingRemote.current = false;
+    }, 400);
+  }, [cards, dir, user]);
+
+  function signIn() {
+    if (!FIREBASE_READY) return;
+    fbAuth.signInWithPopup(googleProvider).catch(() => {
+      try { fbAuth.signInWithRedirect(googleProvider); } catch (e) {}
+    });
+  }
+  function signOut() { if (FIREBASE_READY) fbAuth.signOut(); }
+
+  const levels = ["전체", ...cards.map((c) => c.level).filter((v, i, a) => v && a.indexOf(v) === i)];
+  if (levelFilter !== "전체" && !levels.includes(levelFilter)) {
+    setLevelFilter("전체");
+  }
+
+  const scoped = levelFilter === "전체" ? cards : cards.filter((c) => c.level === levelFilter);
+
+  const now = Date.now();
+  const due = scoped.filter((c) => isDue(c, now));
+  const stats = {
+    new: scoped.filter((c) => bucket(c) === "new").length,
+    learning: scoped.filter((c) => bucket(c) === "learning").length,
+    mastered: scoped.filter((c) => bucket(c) === "mastered").length,
+    due: due.length, total: scoped.length,
+  };
+
+  const shell = {
+    minHeight: "100vh", background: C.cream, color: C.ink,
+    fontFamily: "'Hanken Grotesk','Noto Sans KR',sans-serif",
+    backgroundImage: `radial-gradient(${C.line} 1px, transparent 1px)`,
+    backgroundSize: "22px 22px",
+  };
+
+  return (
+    <div style={shell}>
+      <style>{FONTS}</style>
+      <style>{`
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        .fr { font-family:'Fraunces','Noto Sans KR',serif; }
+        .pressable { transition: transform .12s ease, box-shadow .12s ease; }
+        .pressable:active { transform: scale(.97); }
+        @keyframes rise { from{opacity:0; transform:translateY(12px)} to{opacity:1; transform:none} }
+        .rise { animation: rise .5s cubic-bezier(.2,.8,.2,1) both; }
+        .flip3d { perspective: 1400px; }
+        .flipinner { transition: transform .55s cubic-bezier(.4,.2,.2,1); transform-style: preserve-3d; position:relative; }
+        .flipped { transform: rotateY(180deg); }
+        .face { backface-visibility:hidden; -webkit-backface-visibility:hidden; position:absolute; inset:0; }
+        .back { transform: rotateY(180deg); }
+      `}</style>
+
+      <div style={{ maxWidth: 460, margin: "0 auto", padding: "20px 18px 64px" }}>
+        <Header view={view} setView={setView} />
+        <SyncBar user={user} sync={sync} signIn={signIn} signOut={signOut} />
+        {view === "home" && <Home stats={stats} setView={setView} dir={dir} setDir={setDir} levels={levels} levelFilter={levelFilter} setLevelFilter={setLevelFilter} />}
+        {view === "study" && (
+          <Study cards={scoped} setCards={setCards} dir={dir} back={() => setView("home")} />
+        )}
+        {view === "quiz" && (
+          <Quiz cards={scoped} setCards={setCards} dir={dir} back={() => setView("home")} />
+        )}
+        {view === "manage" && (
+          <Manage cards={cards} setCards={setCards} back={() => setView("home")} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Header({ view, setView }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+      <button onClick={() => setView("home")} className="pressable"
+        style={{ border: "none", background: "transparent", textAlign: "left", cursor: "pointer", padding: 0 }}>
+        <div className="fr" style={{ fontSize: 22, fontWeight: 900, color: C.teal, lineHeight: 1 }}>
+          Kosakata
+        </div>
+        <div style={{ fontSize: 12, color: C.muted, letterSpacing: ".5px", marginTop: 2 }}>
+          인도네시아어 단어 암기
+        </div>
+      </button>
+      {view !== "home" && (
+        <button onClick={() => setView("home")} className="pressable"
+          style={{ border: `1px solid ${C.line}`, background: C.paper, color: C.muted, borderRadius: 999, padding: "8px 14px", fontSize: 13, cursor: "pointer" }}>
+          ← 홈
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SyncBar({ user, sync, signIn, signOut }) {
+  if (sync === "off") return null; // Firebase 미설정이면 표시 안 함
+  const wrap = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+    background: C.paper, border: `1px solid ${C.line}`, borderRadius: 999, padding: "7px 8px 7px 14px", marginBottom: 16 };
+  if (!user) {
+    return (
+      <div style={wrap}>
+        <span style={{ color: C.muted, fontSize: 12.5 }}>기기끼리 진도 동기화</span>
+        <button onClick={signIn} className="pressable"
+          style={{ border: "none", background: C.teal, color: "#fff", borderRadius: 999, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+          Google로 로그인
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div style={wrap}>
+      <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+        <span style={{ width: 8, height: 8, borderRadius: 99, background: sync === "err" ? C.red : C.green, flexShrink: 0 }} />
+        <span style={{ fontSize: 12.5, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {sync === "err" ? "동기화 오류" : "동기화 중"} · {user.email}
+        </span>
+      </span>
+      <button onClick={signOut} className="pressable"
+        style={{ border: `1px solid ${C.line}`, background: "transparent", color: C.muted, borderRadius: 999, padding: "6px 12px", fontSize: 12, cursor: "pointer", flexShrink: 0 }}>
+        로그아웃
+      </button>
+    </div>
+  );
+}
+
+function Home({ stats, setView, dir, setDir, levels, levelFilter, setLevelFilter }) {
+  const pct = stats.total ? Math.round((stats.mastered / stats.total) * 100) : 0;
+  return (
+    <div>
+      {levels.length > 1 && (
+        <div className="rise" style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 7 }}>레벨 선택</div>
+          <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 4 }}>
+            {levels.map((lv) => (
+              <button key={lv} onClick={() => setLevelFilter(lv)} className="pressable"
+                style={{ flexShrink: 0, padding: "8px 14px", borderRadius: 999, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap",
+                  border: `1px solid ${levelFilter === lv ? C.clay : C.line}`,
+                  background: levelFilter === lv ? C.clay : C.paper,
+                  color: levelFilter === lv ? "#fff" : C.muted, fontWeight: levelFilter === lv ? 700 : 500 }}>
+                {lv}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="rise" style={{ background: C.teal, color: C.cream, borderRadius: 24, padding: 22, marginBottom: 16, boxShadow: "0 10px 30px rgba(24,92,88,.18)" }}>
+        <div style={{ fontSize: 13, opacity: .8 }}>오늘 복습할 단어 {levelFilter !== "전체" ? `· ${levelFilter}` : ""}</div>
+        <div className="fr" style={{ fontSize: 56, fontWeight: 900, lineHeight: 1, margin: "4px 0 10px" }}>
+          {stats.due}<span style={{ fontSize: 20, opacity: .7 }}> 개</span>
+        </div>
+        <div style={{ height: 8, background: "rgba(255,255,255,.2)", borderRadius: 99, overflow: "hidden" }}>
+          <div style={{ width: pct + "%", height: "100%", background: C.gold, transition: "width .6s" }} />
+        </div>
+        <div style={{ fontSize: 12, opacity: .85, marginTop: 8 }}>전체 {stats.total}개 중 {stats.mastered}개 완전 암기 ({pct}%)</div>
+      </div>
+
+      <div className="rise" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 18, animationDelay: ".05s" }}>
+        <Stat label="새 단어" value={stats.new} color={C.muted} />
+        <Stat label="학습 중" value={stats.learning} color={C.clay} />
+        <Stat label="암기 완료" value={stats.mastered} color={C.green} />
+      </div>
+
+      <BigButton onClick={() => setView("study")} bg={C.clay} disabled={stats.due === 0} className="rise" style={{ animationDelay: ".1s" }}>
+        <div className="fr" style={{ fontSize: 20, fontWeight: 900 }}>카드 학습 시작</div>
+        <div style={{ fontSize: 13, opacity: .85, marginTop: 2 }}>
+          {stats.due > 0 ? "답을 떠올린 뒤 카드를 뒤집어 확인하세요" : "오늘 복습할 단어를 모두 끝냈어요 🎉"}
+        </div>
+      </BigButton>
+
+      <BigButton onClick={() => setView("quiz")} bg={C.paper} fg={C.ink} border className="rise" style={{ animationDelay: ".15s" }}>
+        <div className="fr" style={{ fontSize: 18, fontWeight: 900 }}>4지선다 퀴즈</div>
+        <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>빠르게 재미있게 점검하기</div>
+      </BigButton>
+
+      <BigButton onClick={() => setView("manage")} bg={C.paper} fg={C.ink} border className="rise" style={{ animationDelay: ".2s" }}>
+        <div className="fr" style={{ fontSize: 18, fontWeight: 900 }}>단어 추가 · 관리</div>
+        <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>내 단어를 직접 넣고 진도를 확인</div>
+      </BigButton>
+
+      <div style={{ marginTop: 18, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 16, padding: "12px 14px" }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>학습 방향</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Toggle active={dir === "id-ko"} onClick={() => setDir("id-ko")}>인니어 → 뜻 보기</Toggle>
+          <Toggle active={dir === "ko-id"} onClick={() => setDir("ko-id")}>뜻 → 인니어 말하기</Toggle>
+        </div>
+        <div style={{ fontSize: 11.5, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
+          뜻을 보고 인니어를 떠올리는 쪽이 더 어렵지만 기억에 훨씬 잘 남아요.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, color }) {
+  return (
+    <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 16, padding: "14px 10px", textAlign: "center" }}>
+      <div className="fr" style={{ fontSize: 28, fontWeight: 900, color }}>{value}</div>
+      <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+function BigButton({ children, onClick, bg, fg = "#fff", border, disabled, style, className }) {
+  return (
+    <button onClick={onClick} disabled={disabled} className={"pressable " + (className || "")}
+      style={{
+        width: "100%", textAlign: "left", borderRadius: 20, padding: "16px 18px", marginBottom: 12,
+        background: disabled ? "#E9E0D0" : bg, color: disabled ? C.muted : fg,
+        border: border ? `1px solid ${C.line}` : "none", cursor: disabled ? "default" : "pointer",
+        boxShadow: border ? "none" : "0 6px 18px rgba(0,0,0,.08)", ...style,
+      }}>
+      {children}
+    </button>
+  );
+}
+
+function Toggle({ active, onClick, children }) {
+  return (
+    <button onClick={onClick} className="pressable"
+      style={{ flex: 1, padding: "10px 8px", borderRadius: 12, fontSize: 12.5, cursor: "pointer",
+        border: `1px solid ${active ? C.teal : C.line}`, background: active ? C.teal : "transparent",
+        color: active ? C.cream : C.muted, fontWeight: active ? 700 : 500 }}>
+      {children}
+    </button>
+  );
+}
+
+function Study({ cards, setCards, dir, back }) {
+  const now = Date.now();
+  const [queue, setQueue] = useState(() => {
+    const due = cards.filter((c) => isDue(c, now)).map((c) => c.key);
+    for (let i = due.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[due[i], due[j]] = [due[j], due[i]]; }
+    return due;
+  });
+  const [revealed, setRevealed] = useState(false);
+  const [done, setDone] = useState(0);
+
+  if (queue.length === 0) {
+    return <DoneScreen count={done} back={back} />;
+  }
+
+  const card = cards.find((c) => c.key === queue[0]);
+  const front = dir === "id-ko" ? card.id : card.ko;
+  const backTxt = dir === "id-ko" ? card.ko : card.id;
+  const frontLabel = dir === "id-ko" ? "인도네시아어" : "뜻";
+
+  function rate(kind) {
+    const t = Date.now();
+    let again = false;
+    setCards((prev) => prev.map((c) => {
+      if (c.key !== card.key) return c;
+      let box = c.box;
+      if (kind === "forgot") { box = 1; again = true; }
+      else if (kind === "hard") { box = Math.max(1, c.box); again = true; }
+      else { box = Math.min(5, (c.box || 0) + 1); }
+      return { ...c, box, next: t + INTERVALS[box] * DAY };
+    }));
+    setQueue((q) => {
+      const rest = q.slice(1);
+      return again ? [...rest, card.key] : rest;
+    });
+    setRevealed(false);
+    setDone((d) => d + 1);
+  }
+
+  const total = queue.length;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 13, color: C.muted }}>남은 카드 {total}개</span>
+        <span style={{ fontSize: 13, color: C.muted }}>오늘 {done}개 학습</span>
+      </div>
+
+      <div className="flip3d" style={{ marginBottom: 18 }} onClick={() => !revealed && setRevealed(true)}>
+        <div className={"flipinner" + (revealed ? " flipped" : "")} style={{ height: 300 }}>
+          <div className="face" style={cardFace(C.paper)}>
+            <div style={{ fontSize: 12, color: C.muted, letterSpacing: 1 }}>{frontLabel}</div>
+            <div className="fr" style={{ fontSize: dir === "id-ko" ? 40 : 34, fontWeight: 900, color: C.ink, textAlign: "center", padding: "0 10px" }}>
+              {front}
+            </div>
+            <div style={{ fontSize: 13, color: C.clay, fontWeight: 600 }}>👆 떠올린 뒤 눌러서 확인</div>
+          </div>
+          <div className="face back" style={{ ...cardFace(C.teal), opacity: revealed ? 1 : 0, transition: "opacity .18s ease " + (revealed ? ".16s" : "0s") }}>
+            <div className="fr" style={{ fontSize: 38, fontWeight: 900, color: C.cream, textAlign: "center", padding: "0 10px" }}>
+              {revealed ? backTxt : ""}
+            </div>
+            {card.ex ? (
+              <div style={{ textAlign: "center", color: "rgba(248,241,228,.85)", fontSize: 14, lineHeight: 1.5, padding: "0 14px" }}>
+                <div style={{ fontStyle: "italic" }}>{revealed ? card.ex : ""}</div>
+                <div style={{ fontSize: 12.5, opacity: .8, marginTop: 4 }}>{revealed ? card.exKo : ""}</div>
+              </div>
+            ) : <div style={{ height: 4 }} />}
+          </div>
+        </div>
+      </div>
+
+      {!revealed ? (
+        <button onClick={() => setRevealed(true)} className="pressable"
+          style={{ width: "100%", padding: 16, borderRadius: 16, border: "none", background: C.ink, color: C.cream, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>
+          정답 확인
+        </button>
+      ) : (
+        <div>
+          <div style={{ fontSize: 13, color: C.muted, textAlign: "center", marginBottom: 8 }}>얼마나 잘 떠올렸나요?</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            <RateBtn onClick={() => rate("forgot")} bg="#fff" border={C.red} fg={C.red}>모르겠어요<small>다시 자주</small></RateBtn>
+            <RateBtn onClick={() => rate("hard")} bg="#fff" border={C.gold} fg={C.clayDark}>애매해요<small>한 번 더</small></RateBtn>
+            <RateBtn onClick={() => rate("easy")} bg={C.green} border={C.green} fg="#fff">알아요!<small>나중에</small></RateBtn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function cardFace(bg) {
+  return {
+    background: bg, borderRadius: 24, border: bg === C.paper ? `1px solid ${C.line}` : "none",
+    boxShadow: "0 10px 30px rgba(0,0,0,.1)", display: "flex", flexDirection: "column",
+    alignItems: "center", justifyContent: "space-around", padding: 22, cursor: "pointer",
+  };
+}
+
+function RateBtn({ children, onClick, bg, border, fg }) {
+  return (
+    <button onClick={onClick} className="pressable"
+      style={{ padding: "12px 6px", borderRadius: 14, border: `1.5px solid ${border}`, background: bg, color: fg,
+        fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", flexDirection: "column", gap: 2, lineHeight: 1.2 }}>
+      {React.Children.map(children, (ch) =>
+        typeof ch === "string" ? ch : <span style={{ fontSize: 10.5, fontWeight: 500, opacity: .75 }}>{ch.props.children}</span>
+      )}
+    </button>
+  );
+}
+
+function DoneScreen({ count, back }) {
+  return (
+    <div className="rise" style={{ textAlign: "center", padding: "40px 20px" }}>
+      <div style={{ fontSize: 56 }}>🎉</div>
+      <div className="fr" style={{ fontSize: 26, fontWeight: 900, color: C.teal, margin: "10px 0" }}>오늘 학습 완료!</div>
+      <div style={{ color: C.muted, marginBottom: 24 }}>{count}개 카드를 복습했어요. 내일 또 만나요.</div>
+      <button onClick={back} className="pressable"
+        style={{ padding: "14px 28px", borderRadius: 16, border: "none", background: C.clay, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>
+        홈으로
+      </button>
+    </div>
+  );
+}
+
+function Quiz({ cards, setCards, dir, back }) {
+  const [order] = useState(() => {
+    const due = cards.filter((c) => isDue(c, Date.now()));
+    const base = (due.length >= 4 ? due : cards).slice();
+    for (let i = base.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[base[i], base[j]] = [base[j], base[i]]; }
+    return base.slice(0, 10).map((c) => c.key);
+  });
+  const [idx, setIdx] = useState(0);
+  const [picked, setPicked] = useState(null);
+  const [score, setScore] = useState(0);
+
+  const card = idx < order.length ? cards.find((c) => c.key === order[idx]) : null;
+  const ans = card ? (dir === "id-ko" ? card.ko : card.id) : null;
+  const options = React.useMemo(() => {
+    if (!card) return [];
+    const others = cards.filter((c) => c.key !== card.key).map((c) => (dir === "id-ko" ? c.ko : c.id));
+    const uniq = [...new Set(others)];
+    for (let i = uniq.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[uniq[i], uniq[j]] = [uniq[j], uniq[i]]; }
+    const opts = [ans, ...uniq.slice(0, 3)];
+    for (let i = opts.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[opts[i], opts[j]] = [opts[j], opts[i]]; }
+    return opts;
+  }, [idx, card]);
+
+  if (cards.length < 4) {
+    return <div style={{ textAlign: "center", padding: 30, color: C.muted }}>퀴즈는 단어가 4개 이상일 때 가능해요.</div>;
+  }
+  if (idx >= order.length) {
+    return (
+      <div className="rise" style={{ textAlign: "center", padding: "40px 20px" }}>
+        <div style={{ fontSize: 52 }}>{score === order.length ? "🏆" : "📘"}</div>
+        <div className="fr" style={{ fontSize: 26, fontWeight: 900, color: C.teal, margin: "10px 0" }}>
+          {order.length}문제 중 {score}개 정답
+        </div>
+        <button onClick={back} className="pressable" style={{ padding: "14px 28px", borderRadius: 16, border: "none", background: C.clay, color: "#fff", fontWeight: 700, cursor: "pointer", marginTop: 14 }}>홈으로</button>
+      </div>
+    );
+  }
+
+  const q = dir === "id-ko" ? card.id : card.ko;
+
+  function choose(opt) {
+    if (picked) return;
+    setPicked(opt);
+    const correct = opt === ans;
+    if (correct) setScore((s) => s + 1);
+    setCards((prev) => prev.map((c) => {
+      if (c.key !== card.key) return c;
+      const box = correct ? Math.min(5, (c.box || 0) + 1) : 1;
+      return { ...c, box, next: Date.now() + INTERVALS[box] * DAY };
+    }));
+    setTimeout(() => { setPicked(null); setIdx((i) => i + 1); }, 950);
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>문제 {idx + 1} / {order.length}</div>
+      <div style={{ background: C.teal, color: C.cream, borderRadius: 22, padding: "30px 18px", textAlign: "center", marginBottom: 18, boxShadow: "0 8px 24px rgba(24,92,88,.18)" }}>
+        <div style={{ fontSize: 12, opacity: .7, marginBottom: 6 }}>{dir === "id-ko" ? "뜻을 고르세요" : "맞는 인도네시아어를 고르세요"}</div>
+        <div className="fr" style={{ fontSize: 34, fontWeight: 900 }}>{q}</div>
+      </div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {options.map((opt) => {
+          let bg = C.paper, bd = C.line, fg = C.ink;
+          if (picked) {
+            if (opt === ans) { bg = C.green; bd = C.green; fg = "#fff"; }
+            else if (opt === picked) { bg = "#F4DAD2"; bd = C.red; fg = C.clayDark; }
+          }
+          return (
+            <button key={opt} onClick={() => choose(opt)} className="pressable"
+              style={{ padding: "16px 18px", borderRadius: 16, border: `1.5px solid ${bd}`, background: bg, color: fg, fontSize: 16, fontWeight: 600, textAlign: "left", cursor: "pointer" }}>
+              {opt}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Manage({ cards, setCards, back }) {
+  const [tab, setTab] = useState("one");
+  const [id, setId] = useState("");
+  const [ko, setKo] = useState("");
+  const [ex, setEx] = useState("");
+  const [level, setLevel] = useState("미지정");
+  const [bulk, setBulk] = useState("");
+  const [bulkLevel, setBulkLevel] = useState("미지정");
+  const [bulkMsg, setBulkMsg] = useState("");
+  const [exportText, setExportText] = useState(null);
+  const [copyMsg, setCopyMsg] = useState("");
+  const levelRef = useRef(null);
+  const bulkLevelRef = useRef(null);
+
+  const existingLevels = cards.map((c) => c.level).filter((v, i, a) => v && a.indexOf(v) === i);
+
+  function add() {
+    if (!id.trim() || !ko.trim()) return;
+    const card = {
+      key: "u" + Date.now() + Math.random().toString(36).slice(2, 6),
+      id: id.trim(), ko: ko.trim(), ex: ex.trim(), exKo: "",
+      level: level.trim() || "미지정", box: 0, next: 0,
+    };
+    setCards((prev) => [card, ...prev]);
+    setId(""); setKo(""); setEx("");
+  }
+  function remove(key) { setCards((prev) => prev.filter((c) => c.key !== key)); }
+  function changeLevel(key, newLevel) {
+    setCards((prev) => prev.map((c) => (c.key === key ? { ...c, level: newLevel } : c)));
+  }
+
+  function addBulk() {
+    const lines = bulk.split("\n").map((l) => l.trim()).filter(Boolean);
+    const newCards = [];
+    let skipped = 0;
+    const lv = bulkLevel.trim() || "미지정";
+    for (const line of lines) {
+      const parts = line.split(/\t|,|;/).map((p) => p.trim());
+      const [w, meaning, example] = parts;
+      if (!w || !meaning) { skipped++; continue; }
+      newCards.push({
+        key: "u" + Date.now() + Math.random().toString(36).slice(2, 7),
+        id: w, ko: meaning, ex: example || "", exKo: "", level: lv, box: 0, next: 0,
+      });
+    }
+    if (newCards.length === 0) {
+      setBulkMsg("등록할 단어를 찾지 못했어요. ‘인니어, 뜻’ 형식인지 확인해 주세요.");
+      return;
+    }
+    setCards((prev) => [...newCards, ...prev]);
+    setBulk("");
+    setBulkMsg(`${lv}에 ${newCards.length}개 추가 완료!${skipped ? ` (형식이 안 맞는 ${skipped}줄은 건너뜀)` : ""}`);
+  }
+
+  function reset() {
+    if (confirm("모든 단어의 학습 진도를 초기화할까요? (단어는 그대로 남습니다)")) {
+      setCards((prev) => prev.map((c) => ({ ...c, box: 0, next: 0 })));
+    }
+  }
+
+  function doExport() {
+    const byLevel = {};
+    for (const c of cards) { (byLevel[c.level] = byLevel[c.level] || []).push(c); }
+    let out = "";
+    for (const lv of Object.keys(byLevel)) {
+      out += `[${lv}]\n`;
+      for (const c of byLevel[lv]) out += `${c.id}, ${c.ko}${c.ex ? `, ${c.ex}` : ""}\n`;
+      out += "\n";
+    }
+    setExportText(out.trim());
+    setCopyMsg("");
+  }
+  async function copyExport() {
+    try {
+      await navigator.clipboard.writeText(exportText);
+      setCopyMsg("복사됐어요!");
+    } catch (e) {
+      setCopyMsg("아래 글을 길게 눌러 직접 복사해 주세요.");
+    }
+  }
+
+  const input = { width: "100%", padding: "12px 14px", borderRadius: 12, border: `1px solid ${C.line}`, background: C.paper, fontSize: 15, color: C.ink, marginBottom: 8, fontFamily: "inherit" };
+
+  const LevelChips = ({ value, onPick, inputRef }) => {
+    const opts = ["미지정", ...existingLevels.filter((l) => l && l !== "미지정")];
+    return (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+        {opts.map((lv) => (
+          <button key={lv} onClick={() => onPick(lv)} className="pressable"
+            style={{ padding: "5px 11px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+              border: `1px solid ${value === lv ? C.teal : C.line}`,
+              background: value === lv ? C.teal : "transparent", color: value === lv ? "#fff" : C.muted }}>
+            {lv}
+          </button>
+        ))}
+        <button onClick={() => { onPick(""); setTimeout(() => inputRef?.current?.focus(), 0); }} className="pressable"
+          style={{ padding: "5px 11px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+            border: `1px dashed ${C.clay}`, background: "transparent", color: C.clay, fontWeight: 600 }}>
+          + 새 카테고리
+        </button>
+      </div>
+    );
+  };
+
+  const grouped = {};
+  for (const c of cards) { (grouped[c.level] = grouped[c.level] || []).push(c); }
+  const allLevelNames = Object.keys(grouped);
+
+  return (
+    <div>
+      <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 18, padding: 16, marginBottom: 18 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <Toggle active={tab === "one"} onClick={() => { setTab("one"); setBulkMsg(""); }}>한 개씩 추가</Toggle>
+          <Toggle active={tab === "bulk"} onClick={() => { setTab("bulk"); setBulkMsg(""); }}>여러 개 한꺼번에</Toggle>
+        </div>
+
+        {tab === "one" ? (
+          <>
+            <input style={input} placeholder="인도네시아어 (예: terima kasih)" value={id} onChange={(e) => setId(e.target.value)} />
+            <input style={input} placeholder="뜻 (예: 감사합니다)" value={ko} onChange={(e) => setKo(e.target.value)} />
+            <input style={input} placeholder="예문 (선택)" value={ex} onChange={(e) => setEx(e.target.value)} />
+            <div style={{ fontSize: 12, color: C.muted, margin: "2px 0 6px" }}>레벨 · 카테고리 <span style={{ opacity: .7 }}>(직접 입력하면 새로 만들어져요)</span></div>
+            <LevelChips value={level} onPick={setLevel} inputRef={levelRef} />
+            <input ref={levelRef} style={input} placeholder="예: BIPA 1 / 미지정 / 음식" value={level} onChange={(e) => setLevel(e.target.value)} />
+            <button onClick={add} className="pressable"
+              style={{ width: "100%", padding: 13, borderRadius: 12, border: "none", background: C.clay, color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>
+              추가하기
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.6, marginBottom: 8 }}>
+              한 줄에 한 단어씩 붙여넣으세요. <b style={{ color: C.ink }}>인니어, 뜻</b> 순서이며 쉼표(,)·탭·세미콜론(;) 어느 것으로 구분해도 됩니다. 엑셀·한글에서 두 열을 복사해 붙여도 돼요. 아래에서 고른 레벨로 한꺼번에 등록됩니다.
+            </div>
+            <textarea value={bulk} onChange={(e) => setBulk(e.target.value)} rows={7}
+              placeholder={"makan, 먹다\nminum, 마시다\nbesar, 크다, Rumah ini besar."}
+              style={{ ...input, resize: "vertical", lineHeight: 1.5, marginBottom: 8 }} />
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>이 묶음의 레벨 · 카테고리 <span style={{ opacity: .7 }}>(직접 입력하면 새로 만들어져요)</span></div>
+            <LevelChips value={bulkLevel} onPick={setBulkLevel} inputRef={bulkLevelRef} />
+            <input ref={bulkLevelRef} style={input} placeholder="예: BIPA 2 / 미지정 / 여행" value={bulkLevel} onChange={(e) => setBulkLevel(e.target.value)} />
+            {bulkMsg && <div style={{ fontSize: 12.5, color: bulkMsg.includes("완료") ? C.green : C.clay, marginBottom: 8, fontWeight: 600 }}>{bulkMsg}</div>}
+            <button onClick={addBulk} className="pressable"
+              style={{ width: "100%", padding: 13, borderRadius: 12, border: "none", background: C.clay, color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>
+              한꺼번에 등록하기
+            </button>
+          </>
+        )}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: C.muted }}>전체 {cards.length}개 · {allLevelNames.length}개 레벨</div>
+        <div style={{ display: "flex", gap: 14 }}>
+          <button onClick={doExport} style={{ fontSize: 12.5, color: C.teal, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>내보내기</button>
+          <button onClick={reset} style={{ fontSize: 12.5, color: C.clay, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>진도 초기화</button>
+        </div>
+      </div>
+
+      {exportText !== null && (
+        <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 16, padding: 14, marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>단어 목록 내보내기</div>
+            <button onClick={() => setExportText(null)} style={{ background: "none", border: "none", color: C.muted, fontSize: 16, cursor: "pointer" }}>✕</button>
+          </div>
+          <textarea readOnly value={exportText} rows={8} onFocus={(e) => e.target.select()}
+            style={{ ...input, marginBottom: 8, fontSize: 13, lineHeight: 1.5, fontFamily: "monospace" }} />
+          <button onClick={copyExport} className="pressable"
+            style={{ width: "100%", padding: 11, borderRadius: 10, border: `1px solid ${C.teal}`, background: C.teal, color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
+            복사하기
+          </button>
+          {copyMsg && <div style={{ fontSize: 12.5, color: C.green, marginTop: 6, textAlign: "center" }}>{copyMsg}</div>}
+        </div>
+      )}
+
+      {allLevelNames.map((lv) => (
+        <div key={lv} style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <div className="fr" style={{ fontWeight: 900, fontSize: 16, color: C.teal }}>{lv}</div>
+            <div style={{ fontSize: 12, color: C.muted }}>{grouped[lv].length}개</div>
+            <div style={{ flex: 1, height: 1, background: C.line }} />
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {grouped[lv].map((c) => (
+              <div key={c.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.paper, border: `1px solid ${C.line}`, borderRadius: 14, padding: "11px 14px" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div className="fr" style={{ fontWeight: 700, fontSize: 16 }}>{c.id}</div>
+                  <div style={{ fontSize: 13, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.ko}</div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                  {allLevelNames.length > 1 && (
+                    <select value={c.level} onChange={(e) => changeLevel(c.key, e.target.value)}
+                      style={{ fontSize: 11, color: C.muted, border: `1px solid ${C.line}`, borderRadius: 8, padding: "3px 4px", background: C.cream, fontFamily: "inherit" }}>
+                      {[...new Set([...allLevelNames, "미지정"])].map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  )}
+                  <BoxPip box={c.box} />
+                  <button onClick={() => remove(c.key)} style={{ background: "none", border: "none", color: C.muted, fontSize: 18, cursor: "pointer", padding: 4 }}>✕</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BoxPip({ box }) {
+  const colors = [C.line, "#E6B9A8", C.gold, "#9CC0A8", C.green, C.teal];
+  return (
+    <div style={{ display: "flex", gap: 3 }} title={"단계 " + box + "/5"}>
+      {[1, 2, 3, 4, 5].map((n) => (
+        <div key={n} style={{ width: 7, height: 7, borderRadius: 99, background: n <= box ? colors[box] : C.line }} />
+      ))}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+  </script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
