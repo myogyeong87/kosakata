@@ -667,6 +667,27 @@ function Quiz({ cards, setCards, dir, back }) {
   );
 }
 
+function LevelChips({ existingLevels, value, onPick, inputRef }) {
+  const opts = ["미지정", ...existingLevels.filter((l) => l && l !== "미지정")];
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+      {opts.map((lv) => (
+        <button key={lv} onClick={() => onPick(lv)} className="pressable"
+          style={{ padding: "5px 11px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+            border: `1px solid ${value === lv ? C.teal : C.line}`,
+            background: value === lv ? C.teal : "transparent", color: value === lv ? "#fff" : C.muted }}>
+          {lv}
+        </button>
+      ))}
+      <button onClick={() => { onPick(""); setTimeout(() => { if (inputRef && inputRef.current) inputRef.current.focus(); }, 0); }} className="pressable"
+        style={{ padding: "5px 11px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+          border: `1px dashed ${C.clay}`, background: "transparent", color: C.clay, fontWeight: 600 }}>
+        + 새 카테고리
+      </button>
+    </div>
+  );
+}
+
 function Manage({ cards, setCards, back }) {
   const [tab, setTab] = useState("one");
   const [id, setId] = useState("");
@@ -750,27 +771,6 @@ function Manage({ cards, setCards, back }) {
 
   const input = { width: "100%", padding: "12px 14px", borderRadius: 12, border: `1px solid ${C.line}`, background: C.paper, fontSize: 15, color: C.ink, marginBottom: 8, fontFamily: "inherit" };
 
-  const LevelChips = ({ value, onPick, inputRef }) => {
-    const opts = ["미지정", ...existingLevels.filter((l) => l && l !== "미지정")];
-    return (
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-        {opts.map((lv) => (
-          <button key={lv} onClick={() => onPick(lv)} className="pressable"
-            style={{ padding: "5px 11px", borderRadius: 999, fontSize: 12, cursor: "pointer",
-              border: `1px solid ${value === lv ? C.teal : C.line}`,
-              background: value === lv ? C.teal : "transparent", color: value === lv ? "#fff" : C.muted }}>
-            {lv}
-          </button>
-        ))}
-        <button onClick={() => { onPick(""); setTimeout(() => inputRef?.current?.focus(), 0); }} className="pressable"
-          style={{ padding: "5px 11px", borderRadius: 999, fontSize: 12, cursor: "pointer",
-            border: `1px dashed ${C.clay}`, background: "transparent", color: C.clay, fontWeight: 600 }}>
-          + 새 카테고리
-        </button>
-      </div>
-    );
-  };
-
   const grouped = {};
   for (const c of cards) { (grouped[c.level] = grouped[c.level] || []).push(c); }
   const allLevelNames = Object.keys(grouped);
@@ -789,7 +789,7 @@ function Manage({ cards, setCards, back }) {
             <input style={input} placeholder="뜻 (예: 감사합니다)" value={ko} onChange={(e) => setKo(e.target.value)} />
             <input style={input} placeholder="예문 (선택)" value={ex} onChange={(e) => setEx(e.target.value)} />
             <div style={{ fontSize: 12, color: C.muted, margin: "2px 0 6px" }}>레벨 · 카테고리 <span style={{ opacity: .7 }}>(직접 입력하면 새로 만들어져요)</span></div>
-            <LevelChips value={level} onPick={setLevel} inputRef={levelRef} />
+            <LevelChips existingLevels={existingLevels} value={level} onPick={setLevel} inputRef={levelRef} />
             <input ref={levelRef} style={input} placeholder="예: BIPA 1 / 미지정 / 음식" value={level} onChange={(e) => setLevel(e.target.value)} />
             <button onClick={add} className="pressable"
               style={{ width: "100%", padding: 13, borderRadius: 12, border: "none", background: C.clay, color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>
@@ -805,7 +805,7 @@ function Manage({ cards, setCards, back }) {
               placeholder={"makan, 먹다\nminum, 마시다\nbesar, 크다, Rumah ini besar."}
               style={{ ...input, resize: "vertical", lineHeight: 1.5, marginBottom: 8 }} />
             <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>이 묶음의 레벨 · 카테고리 <span style={{ opacity: .7 }}>(직접 입력하면 새로 만들어져요)</span></div>
-            <LevelChips value={bulkLevel} onPick={setBulkLevel} inputRef={bulkLevelRef} />
+            <LevelChips existingLevels={existingLevels} value={bulkLevel} onPick={setBulkLevel} inputRef={bulkLevelRef} />
             <input ref={bulkLevelRef} style={input} placeholder="예: BIPA 2 / 미지정 / 여행" value={bulkLevel} onChange={(e) => setBulkLevel(e.target.value)} />
             {bulkMsg && <div style={{ fontSize: 12.5, color: bulkMsg.includes("완료") ? C.green : C.clay, marginBottom: 8, fontWeight: 600 }}>{bulkMsg}</div>}
             <button onClick={addBulk} className="pressable"
