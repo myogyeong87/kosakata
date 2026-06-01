@@ -129,16 +129,54 @@ function makeCards(seed) {
 }
 
 // localStorage 에서 불러오기 (없으면 기본 단어로 시작)
+const DEFAULT_SETTINGS = { dailyCap: 30, newPerDay: 10 };
 function loadState() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     if (raw) {
       const data = JSON.parse(raw);
       const cards = (data.cards || makeCards(SEED)).map((c) => ({ ...c, level: c.level || "BIPA 1" }));
-      return { cards, dir: data.dir || "id-ko" };
+      return { cards, dir: data.dir || "id-ko", settings: data.settings || { ...DEFAULT_SETTINGS } };
     }
   } catch (e) { /* 첫 실행 또는 손상된 데이터 */ }
-  return { cards: makeCards(SEED), dir: "id-ko" };
+  return { cards: makeCards(SEED), dir: "id-ko", settings: { ...DEFAULT_SETTINGS } };
+}
+
+// ── 하루 학습 큐 할당 알고리즘 ──────────────────────────────────
+// ① 학습 중 (box 1~3 + 기한 도래) → 전부. 오늘 안 하면 리셋 위험
+// ② 새 단어 (box 0) → newPerDay 개. 뇌의 작업기억 한계 고려
+// ③ 장기 복습 (box 4~5 + 기한 도래) → 남은 자리 채우기
+function buildDailyQueue(cards, settings, now) {
+  const { dailyCap, newPerDay } = settings;
+  function sh(arr) {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+  const learning = sh(cards.filter((c) => isDue(c, now) && c.box >= 1 && c.box <= 3));
+  // 새 단어는 key 정렬로 항상 같은 순서 → 앱 재시작해도 오늘치 단어 일관성 유지
+  const newPool = cards.filter((c) => c.box === 0).sort((a, b) => a.key < b.key ? -1 : 1);
+  const longTerm = sh(cards.filter((c) => isDue(c, now) && c.box >= 4));
+
+  const queue = [...learning.map((c) => c.key)];
+  const taken = new Set(queue);
+
+  // ② 새 단어
+  let newCount = 0;
+  for (const c of newPool) {
+    if (newCount >= newPerDay) break;
+    queue.push(c.key); taken.add(c.key); newCount++;
+  }
+
+  // ③ 장기 복습 — dailyCap까지 채우기 (학습중이 상한 초과해도 학습중은 전부 보여줌)
+  const ltRoom = Math.max(0, dailyCap - queue.length);
+  let ltCount = 0;
+  for (const c of longTerm) {
+    if (ltCount >= ltRoom) break;
+    if (!taken.has(c.key)) { queue.push(c.key); ltCount++; }
+  }
+
+  return { keys: queue, nLearning: learning.length, nNew: newCount, nLt: ltCount };
 }
 
 function isDue(c, now) { return c.next <= now; }
@@ -165,6 +203,7 @@ function App() {
   const [view, setView] = useState("home");
   const [dir, setDir] = useState(boot.current.dir);
   const [levelFilter, setLevelFilter] = useState("전체");
+  const [settings, setSettings] = useState(boot.current.settings);
   const saveTimer = useRef(null);
   const applyingRemote = useRef(false);
 
@@ -173,6 +212,7 @@ function App() {
     applyingRemote.current = true;
     if (Array.isArray(d.cards)) setCards(d.cards.map((c) => ({ ...c, level: c.level || "BIPA 1" })));
     if (d.dir) setDir(d.dir);
+    if (d.settings) setSettings((s) => ({ ...s, ...d.settings }));
   }
 
   // 앱 시작 시 Firestore 연결 — 로그인 없이 자동 동기화
@@ -181,7 +221,7 @@ function App() {
     const ref = deckRef();
     ref.get().then((snap) => {
       if (snap.exists) applyRemote(snap.data());
-      else ref.set({ cards, dir, updatedAt: Date.now() }).catch(() => {});
+      else ref.set({ cards, dir, settings, updatedAt: Date.now() }).catch(() => {});
       ref.onSnapshot((doc) => {
         if (doc.metadata.hasPendingWrites) return;
         applyRemote(doc.data());
@@ -193,13 +233,13 @@ function App() {
   useEffect(() => {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      try { localStorage.setItem(STORE_KEY, JSON.stringify({ cards, dir })); } catch (e) {}
+      try { localStorage.setItem(STORE_KEY, JSON.stringify({ cards, dir, settings })); } catch (e) {}
       if (FIREBASE_READY && !applyingRemote.current) {
-        deckRef().set({ cards, dir, updatedAt: Date.now() }).catch(() => {});
+        deckRef().set({ cards, dir, settings, updatedAt: Date.now() }).catch(() => {});
       }
       applyingRemote.current = false;
     }, 400);
-  }, [cards, dir]);
+  }, [cards, dir, settings]);
 
   const levels = ["전체", ...cards.map((c) => c.level).filter((v, i, a) => v && a.indexOf(v) === i)];
   if (levelFilter !== "전체" && !levels.includes(levelFilter)) {
@@ -207,14 +247,15 @@ function App() {
   }
 
   const scoped = levelFilter === "전체" ? cards : cards.filter((c) => c.level === levelFilter);
-
   const now = Date.now();
-  const due = scoped.filter((c) => isDue(c, now));
+  const alloc = buildDailyQueue(scoped, settings, now);
+
   const stats = {
     new: scoped.filter((c) => bucket(c) === "new").length,
     learning: scoped.filter((c) => bucket(c) === "learning").length,
     mastered: scoped.filter((c) => bucket(c) === "mastered").length,
-    due: due.length, total: scoped.length,
+    total: scoped.length,
+    alloc, // 오늘 할당량 정보
   };
 
   const shell = {
@@ -243,9 +284,9 @@ function App() {
 
       <div style={{ maxWidth: 460, margin: "0 auto", padding: "20px 18px 64px" }}>
         <Header view={view} setView={setView} />
-        {view === "home" && <Home stats={stats} setView={setView} dir={dir} setDir={setDir} levels={levels} levelFilter={levelFilter} setLevelFilter={setLevelFilter} />}
+        {view === "home" && <Home stats={stats} setView={setView} dir={dir} setDir={setDir} levels={levels} levelFilter={levelFilter} setLevelFilter={setLevelFilter} settings={settings} setSettings={setSettings} />}
         {view === "study" && (
-          <Study cards={scoped} setCards={setCards} dir={dir} back={() => setView("home")} />
+          <Study cards={scoped} setCards={setCards} dir={dir} back={() => setView("home")} initialQueue={alloc.keys} />
         )}
         {view === "quiz" && (
           <Quiz cards={scoped} setCards={setCards} dir={dir} back={() => setView("home")} />
@@ -280,8 +321,16 @@ function Header({ view, setView }) {
   );
 }
 
-function Home({ stats, setView, dir, setDir, levels, levelFilter, setLevelFilter }) {
+function Home({ stats, setView, dir, setDir, levels, levelFilter, setLevelFilter, settings, setSettings }) {
   const pct = stats.total ? Math.round((stats.mastered / stats.total) * 100) : 0;
+  const { alloc } = stats;
+  const totalToday = alloc.keys.length;
+  const overCap = alloc.nLearning > settings.dailyCap;
+
+  function adjSetting(key, delta, min, max) {
+    setSettings((s) => ({ ...s, [key]: Math.min(max, Math.max(min, s[key] + delta)) }));
+  }
+
   return (
     <div>
       {levels.length > 1 && (
@@ -302,10 +351,19 @@ function Home({ stats, setView, dir, setDir, levels, levelFilter, setLevelFilter
       )}
 
       <div className="rise" style={{ background: C.teal, color: C.cream, borderRadius: 24, padding: 22, marginBottom: 16, boxShadow: "0 10px 30px rgba(24,92,88,.18)" }}>
-        <div style={{ fontSize: 13, opacity: .8 }}>오늘 복습할 단어 {levelFilter !== "전체" ? `· ${levelFilter}` : ""}</div>
-        <div className="fr" style={{ fontSize: 56, fontWeight: 900, lineHeight: 1, margin: "4px 0 10px" }}>
-          {stats.due}<span style={{ fontSize: 20, opacity: .7 }}> 개</span>
+        <div style={{ fontSize: 13, opacity: .8 }}>오늘 학습할 단어 {levelFilter !== "전체" ? `· ${levelFilter}` : ""}</div>
+        <div className="fr" style={{ fontSize: 56, fontWeight: 900, lineHeight: 1, margin: "4px 0 6px" }}>
+          {totalToday}<span style={{ fontSize: 20, opacity: .7 }}> 개</span>
         </div>
+        {/* 구성 분석 */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 10, fontSize: 12, opacity: .85 }}>
+          {alloc.nLearning > 0 && <span>🔄 학습중 {alloc.nLearning}</span>}
+          {alloc.nNew > 0 && <span>✨ 새 단어 {alloc.nNew}</span>}
+          {alloc.nLt > 0 && <span>📖 복습 {alloc.nLt}</span>}
+        </div>
+        {overCap && <div style={{ fontSize: 11.5, background: "rgba(255,255,255,.15)", borderRadius: 8, padding: "5px 10px", marginBottom: 8 }}>
+          💪 학습 중인 단어가 많아요. 꾸준히 하면 곧 줄어들어요!
+        </div>}
         <div style={{ height: 8, background: "rgba(255,255,255,.2)", borderRadius: 99, overflow: "hidden" }}>
           <div style={{ width: pct + "%", height: "100%", background: C.gold, transition: "width .6s" }} />
         </div>
@@ -318,10 +376,10 @@ function Home({ stats, setView, dir, setDir, levels, levelFilter, setLevelFilter
         <Stat label="암기 완료" value={stats.mastered} color={C.green} />
       </div>
 
-      <BigButton onClick={() => setView("study")} bg={C.clay} disabled={stats.due === 0} className="rise" style={{ animationDelay: ".1s" }}>
+      <BigButton onClick={() => setView("study")} bg={C.clay} disabled={totalToday === 0} className="rise" style={{ animationDelay: ".1s" }}>
         <div className="fr" style={{ fontSize: 20, fontWeight: 900 }}>카드 학습 시작</div>
         <div style={{ fontSize: 13, opacity: .85, marginTop: 2 }}>
-          {stats.due > 0 ? "답을 떠올린 뒤 카드를 뒤집어 확인하세요" : "오늘 복습할 단어를 모두 끝냈어요 🎉"}
+          {totalToday > 0 ? "답을 떠올린 뒤 카드를 뒤집어 확인하세요" : "오늘 복습할 단어를 모두 끝냈어요 🎉"}
         </div>
       </BigButton>
 
@@ -343,6 +401,19 @@ function Home({ stats, setView, dir, setDir, levels, levelFilter, setLevelFilter
         </div>
         <div style={{ fontSize: 11.5, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
           뜻을 보고 인니어를 떠올리는 쪽이 더 어렵지만 기억에 훨씬 잘 남아요.
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 16, padding: "12px 14px" }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>하루 학습량 설정</div>
+        <SettingRow label="새 단어 (개/일)" value={settings.newPerDay}
+          onMinus={() => adjSetting("newPerDay", -5, 5, 30)}
+          onPlus={() => adjSetting("newPerDay", 5, 5, 30)} />
+        <SettingRow label="하루 최대 카드" value={settings.dailyCap}
+          onMinus={() => adjSetting("dailyCap", -5, 15, 100)}
+          onPlus={() => adjSetting("dailyCap", 5, 15, 100)} />
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
+          학습 중인 카드는 상한과 무관하게 항상 표시돼요.
         </div>
       </div>
     </div>
@@ -383,13 +454,24 @@ function Toggle({ active, onClick, children }) {
   );
 }
 
-function Study({ cards, setCards, dir, back }) {
+function SettingRow({ label, value, onMinus, onPlus }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+      <div style={{ fontSize: 13, color: C.ink }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <button onClick={onMinus} className="pressable"
+          style={{ width: 30, height: 30, borderRadius: 99, border: `1px solid ${C.line}`, background: C.cream, fontSize: 18, cursor: "pointer", display: "grid", placeItems: "center" }}>−</button>
+        <div className="fr" style={{ fontSize: 20, fontWeight: 900, color: C.teal, minWidth: 28, textAlign: "center" }}>{value}</div>
+        <button onClick={onPlus} className="pressable"
+          style={{ width: 30, height: 30, borderRadius: 99, border: `1px solid ${C.line}`, background: C.cream, fontSize: 18, cursor: "pointer", display: "grid", placeItems: "center" }}>+</button>
+      </div>
+    </div>
+  );
+}
+
+function Study({ cards, setCards, dir, back, initialQueue }) {
   const now = Date.now();
-  const [queue, setQueue] = useState(() => {
-    const due = cards.filter((c) => isDue(c, now)).map((c) => c.key);
-    for (let i = due.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[due[i], due[j]] = [due[j], due[i]]; }
-    return due;
-  });
+  const [queue, setQueue] = useState(() => initialQueue || []);
   const [revealed, setRevealed] = useState(false);
   const [done, setDone] = useState(0);
 
