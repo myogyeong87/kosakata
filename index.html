@@ -712,7 +712,7 @@ function Manage({ cards, setCards, back }) {
       level: level.trim() || "미지정", box: 0, next: 0,
     };
     setCards((prev) => [card, ...prev]);
-    setId(""); setKo(""); setEx("");
+    setId(""); setKo(""); setEx();
   }
   function remove(key) { setCards((prev) => prev.filter((c) => c.key !== key)); }
   function changeLevel(key, newLevel) {
@@ -785,15 +785,18 @@ function Manage({ cards, setCards, back }) {
 
         {tab === "one" ? (
           <>
-            <input style={input} placeholder="인도네시아어 (예: terima kasih)" value={id} onChange={(e) => setId(e.target.value)} />
-            <input style={input} placeholder="뜻 (예: 감사합니다)" value={ko} onChange={(e) => setKo(e.target.value)} />
+            <input style={input} placeholder="인도네시아어 (예: terima kasih) *필수" value={id} onChange={(e) => setId(e.target.value)} />
+            <input style={input} placeholder="뜻 (예: 감사합니다) *필수" value={ko} onChange={(e) => setKo(e.target.value)} />
             <input style={input} placeholder="예문 (선택)" value={ex} onChange={(e) => setEx(e.target.value)} />
             <div style={{ fontSize: 12, color: C.muted, margin: "2px 0 6px" }}>레벨 · 카테고리 <span style={{ opacity: .7 }}>(직접 입력하면 새로 만들어져요)</span></div>
             <LevelChips existingLevels={existingLevels} value={level} onPick={setLevel} inputRef={levelRef} />
             <input ref={levelRef} style={input} placeholder="예: BIPA 1 / 미지정 / 음식" value={level} onChange={(e) => setLevel(e.target.value)} />
-            <button onClick={add} className="pressable"
-              style={{ width: "100%", padding: 13, borderRadius: 12, border: "none", background: C.clay, color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>
-              추가하기
+            <button onClick={add} disabled={!id.trim() || !ko.trim()} className="pressable"
+              style={{ width: "100%", padding: 13, borderRadius: 12, border: "none",
+                background: (!id.trim() || !ko.trim()) ? C.line : C.clay,
+                color: (!id.trim() || !ko.trim()) ? C.muted : "#fff",
+                fontWeight: 700, fontSize: 15, cursor: (!id.trim() || !ko.trim()) ? "default" : "pointer" }}>
+              {(!id.trim() || !ko.trim()) ? "인도네시아어와 뜻을 입력해주세요" : "추가하기"}
             </button>
           </>
         ) : (
