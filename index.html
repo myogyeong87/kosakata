@@ -702,17 +702,25 @@ function Manage({ cards, setCards, back }) {
   const levelRef = useRef(null);
   const bulkLevelRef = useRef(null);
 
+  const [dupMsg, setDupMsg] = useState("");
+
   const existingLevels = cards.map((c) => c.level).filter((v, i, a) => v && a.indexOf(v) === i);
+  const existingWords = new Set(cards.map((c) => c.id.trim().toLowerCase()));
 
   function add() {
     if (!id.trim() || !ko.trim()) return;
+    if (existingWords.has(id.trim().toLowerCase())) {
+      setDupMsg(`"${id.trim()}"는 이미 있는 단어예요.`);
+      return;
+    }
+    setDupMsg("");
     const card = {
       key: "u" + Date.now() + Math.random().toString(36).slice(2, 6),
       id: id.trim(), ko: ko.trim(), ex: ex.trim(), exKo: "",
       level: level.trim() || "미지정", box: 0, next: 0,
     };
     setCards((prev) => [card, ...prev]);
-    setId(""); setKo(""); setEx();
+    setId(""); setKo(""); setEx("");
   }
   function remove(key) { setCards((prev) => prev.filter((c) => c.key !== key)); }
   function changeLevel(key, newLevel) {
@@ -722,24 +730,30 @@ function Manage({ cards, setCards, back }) {
   function addBulk() {
     const lines = bulk.split("\n").map((l) => l.trim()).filter(Boolean);
     const newCards = [];
-    let skipped = 0;
+    let skipped = 0, duped = 0;
     const lv = bulkLevel.trim() || "미지정";
+    const seen = new Set(existingWords);
     for (const line of lines) {
       const parts = line.split(/\t|,|;/).map((p) => p.trim());
       const [w, meaning, example] = parts;
       if (!w || !meaning) { skipped++; continue; }
+      if (seen.has(w.toLowerCase())) { duped++; continue; }
+      seen.add(w.toLowerCase());
       newCards.push({
         key: "u" + Date.now() + Math.random().toString(36).slice(2, 7),
         id: w, ko: meaning, ex: example || "", exKo: "", level: lv, box: 0, next: 0,
       });
     }
     if (newCards.length === 0) {
-      setBulkMsg("등록할 단어를 찾지 못했어요. ‘인니어, 뜻’ 형식인지 확인해 주세요.");
+      setBulkMsg(duped > 0 ? `모두 이미 있는 단어예요. (중복 ${duped}개)` : "등록할 단어를 찾지 못했어요. '인니어, 뜻' 형식인지 확인해 주세요.");
       return;
     }
     setCards((prev) => [...newCards, ...prev]);
     setBulk("");
-    setBulkMsg(`${lv}에 ${newCards.length}개 추가 완료!${skipped ? ` (형식이 안 맞는 ${skipped}줄은 건너뜀)` : ""}`);
+    const msgs = [`${lv}에 ${newCards.length}개 추가 완료!`];
+    if (duped > 0) msgs.push(`중복 ${duped}개 건너뜀`);
+    if (skipped > 0) msgs.push(`형식 오류 ${skipped}줄 건너뜀`);
+    setBulkMsg(msgs.join(" · "));
   }
 
   function reset() {
@@ -798,6 +812,7 @@ function Manage({ cards, setCards, back }) {
                 fontWeight: 700, fontSize: 15, cursor: (!id.trim() || !ko.trim()) ? "default" : "pointer" }}>
               {(!id.trim() || !ko.trim()) ? "인도네시아어와 뜻을 입력해주세요" : "추가하기"}
             </button>
+            {dupMsg && <div style={{ fontSize: 12.5, color: C.red, marginTop: 6, textAlign: "center" }}>{dupMsg}</div>}
           </>
         ) : (
           <>
