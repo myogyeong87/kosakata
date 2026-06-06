@@ -916,11 +916,12 @@ function Manage({ cards, setCards, back }) {
 }
 
 function BoxPip({ box, misses }) {
-  const colors = [C.line, "#E6B9A8", C.gold, C.green, "#2A7A56", C.teal];
+  const filled = Math.min(3, box); // box 3 이상은 모두 3개 꽉 참 = 학습 완료
+  const dotColor = [C.line, "#E6B9A8", C.gold, C.green][filled];
   return (
-    <div style={{ display: "flex", gap: 3, alignItems: "center" }} title={`단계 ${box}/5${misses ? ` · 틀린 횟수 ${misses}` : ""}`}>
-      {[1, 2, 3, 4, 5].map((n) => (
-        <div key={n} style={{ width: 7, height: 7, borderRadius: 99, background: n <= box ? colors[box] : C.line }} />
+    <div style={{ display: "flex", gap: 4, alignItems: "center" }} title={`${filled}/3${misses ? ` · 틀린 횟수 ${misses}` : ""}`}>
+      {[1, 2, 3].map((n) => (
+        <div key={n} style={{ width: 8, height: 8, borderRadius: 99, background: n <= filled ? dotColor : C.line }} />
       ))}
     </div>
   );
