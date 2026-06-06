@@ -123,19 +123,18 @@ function makeCards(seed) {
     key: "c" + i + "_" + Date.now() + Math.random().toString(36).slice(2, 6),
     id: w.id, ko: w.ko, ex: w.ex || "", exKo: w.exKo || "",
     level: w.level || "BIPA 1",
-    box: 0,
-    next: 0,
+    box: 0, next: 0, misses: 0,
   }));
 }
 
 // localStorage 에서 불러오기 (없으면 기본 단어로 시작)
-const DEFAULT_SETTINGS = { dailyCap: 30, newPerDay: 10 };
+const DEFAULT_SETTINGS = { dailyCap: 30, newPerDay: 10, newOrder: "recent" };
 function loadState() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     if (raw) {
       const data = JSON.parse(raw);
-      const cards = (data.cards || makeCards(SEED)).map((c) => ({ ...c, level: c.level || "BIPA 1" }));
+      const cards = (data.cards || makeCards(SEED)).map((c) => ({ ...c, level: c.level || "BIPA 1", misses: c.misses || 0 }));
       return { cards, dir: data.dir || "id-ko", settings: data.settings || { ...DEFAULT_SETTINGS } };
     }
   } catch (e) { /* 첫 실행 또는 손상된 데이터 */ }
@@ -147,28 +146,40 @@ function loadState() {
 // ② 새 단어 (box 0) → newPerDay 개. 뇌의 작업기억 한계 고려
 // ③ 장기 복습 (box 4~5 + 기한 도래) → 남은 자리 채우기
 function buildDailyQueue(cards, settings, now) {
-  const { dailyCap, newPerDay } = settings;
+  const { dailyCap, newPerDay, newOrder = "recent" } = settings;
   function sh(arr) {
     const a = [...arr];
     for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; }
     return a;
   }
-  const learning = sh(cards.filter((c) => isDue(c, now) && c.box >= 1 && c.box <= 3));
-  // 새 단어는 key 정렬로 항상 같은 순서 → 앱 재시작해도 오늘치 단어 일관성 유지
-  const newPool = cards.filter((c) => c.box === 0).sort((a, b) => a.key < b.key ? -1 : 1);
-  const longTerm = sh(cards.filter((c) => isDue(c, now) && c.box >= 4));
+
+  // ① 학습 중: box 1~2 (box 3부터는 이미 3번 맞췄으니 여유롭게)
+  let learning = cards.filter((c) => isDue(c, now) && c.box >= 1 && c.box <= 2);
+  // ③ 여유 복습: box 3~5
+  let longTerm = sh(cards.filter((c) => isDue(c, now) && c.box >= 3));
+
+  // 새 단어 정렬
+  let newPool = cards.filter((c) => c.box === 0);
+  if (newOrder === "recent")  newPool = [...newPool].sort((a, b) => a.key > b.key ? -1 : 1);
+  else if (newOrder === "oldest") newPool = [...newPool].sort((a, b) => a.key < b.key ? -1 : 1);
+  else if (newOrder === "hard")   newPool = [...newPool].sort((a, b) => (b.misses || 0) - (a.misses || 0) || (a.key > b.key ? -1 : 1));
+  else newPool = sh(newPool); // random
+
+  // 어려운 단어 먼저 모드: 학습 중 카드도 misses 기준 정렬
+  if (newOrder === "hard") learning = [...learning].sort((a, b) => (b.misses || 0) - (a.misses || 0));
+  else learning = sh(learning);
 
   const queue = [...learning.map((c) => c.key)];
   const taken = new Set(queue);
 
-  // ② 새 단어
+  // ② 새 단어 (최대 newPerDay)
   let newCount = 0;
   for (const c of newPool) {
     if (newCount >= newPerDay) break;
     queue.push(c.key); taken.add(c.key); newCount++;
   }
 
-  // ③ 장기 복습 — dailyCap까지 채우기 (학습중이 상한 초과해도 학습중은 전부 보여줌)
+  // ③ 여유 복습 — dailyCap까지 채우기
   const ltRoom = Math.max(0, dailyCap - queue.length);
   let ltCount = 0;
   for (const c of longTerm) {
@@ -182,8 +193,8 @@ function buildDailyQueue(cards, settings, now) {
 function isDue(c, now) { return c.next <= now; }
 function bucket(c) {
   if (c.box === 0) return "new";
-  if (c.box <= 3) return "learning";
-  return "mastered";
+  if (c.box <= 2) return "learning";   // box 1~2: 아직 학습 중
+  return "mastered";                    // box 3~5: 3번 정답 → 학습 완료
 }
 
 const C = {
@@ -210,7 +221,7 @@ function App() {
   function applyRemote(d) {
     if (!d) return;
     applyingRemote.current = true;
-    if (Array.isArray(d.cards)) setCards(d.cards.map((c) => ({ ...c, level: c.level || "BIPA 1" })));
+    if (Array.isArray(d.cards)) setCards(d.cards.map((c) => ({ ...c, level: c.level || "BIPA 1", misses: c.misses || 0 })));
     if (d.dir) setDir(d.dir);
     if (d.settings) setSettings((s) => ({ ...s, ...d.settings }));
   }
@@ -412,6 +423,18 @@ function Home({ stats, setView, dir, setDir, levels, levelFilter, setLevelFilter
         <SettingRow label="하루 최대 카드" value={settings.dailyCap}
           onMinus={() => adjSetting("dailyCap", -5, 15, 100)}
           onPlus={() => adjSetting("dailyCap", 5, 15, 100)} />
+        <div style={{ fontSize: 12, color: C.muted, margin: "4px 0 8px" }}>새 단어 순서</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["recent","최신순"],["oldest","오래된순"],["random","랜덤"],["hard","어려운 단어 먼저"]].map(([v, l]) => (
+            <button key={v} onClick={() => setSettings((s) => ({ ...s, newOrder: v }))} className="pressable"
+              style={{ padding: "6px 12px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+                border: `1px solid ${settings.newOrder === v ? C.clay : C.line}`,
+                background: settings.newOrder === v ? C.clay : "transparent",
+                color: settings.newOrder === v ? "#fff" : C.muted, fontWeight: settings.newOrder === v ? 700 : 400 }}>
+              {l}
+            </button>
+          ))}
+        </div>
         <div style={{ fontSize: 11, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
           학습 중인 카드는 상한과 무관하게 항상 표시돼요.
         </div>
@@ -490,10 +513,11 @@ function Study({ cards, setCards, dir, back, initialQueue }) {
     setCards((prev) => prev.map((c) => {
       if (c.key !== card.key) return c;
       let box = c.box;
+      const misses = (c.misses || 0) + (kind === "forgot" ? 1 : 0);
       if (kind === "forgot") { box = 1; again = true; }
       else if (kind === "hard") { box = Math.max(1, c.box); again = true; }
       else { box = Math.min(5, (c.box || 0) + 1); }
-      return { ...c, box, next: t + INTERVALS[box] * DAY };
+      return { ...c, box, misses, next: t + INTERVALS[box] * DAY };
     }));
     setQueue((q) => {
       const rest = q.slice(1);
@@ -879,7 +903,7 @@ function Manage({ cards, setCards, back }) {
                       {[...new Set([...allLevelNames, "미지정"])].map((n) => <option key={n} value={n}>{n}</option>)}
                     </select>
                   )}
-                  <BoxPip box={c.box} />
+                  <BoxPip box={c.box} misses={c.misses} />
                   <button onClick={() => remove(c.key)} style={{ background: "none", border: "none", color: C.muted, fontSize: 18, cursor: "pointer", padding: 4 }}>✕</button>
                 </div>
               </div>
@@ -891,10 +915,10 @@ function Manage({ cards, setCards, back }) {
   );
 }
 
-function BoxPip({ box }) {
-  const colors = [C.line, "#E6B9A8", C.gold, "#9CC0A8", C.green, C.teal];
+function BoxPip({ box, misses }) {
+  const colors = [C.line, "#E6B9A8", C.gold, C.green, "#2A7A56", C.teal];
   return (
-    <div style={{ display: "flex", gap: 3 }} title={"단계 " + box + "/5"}>
+    <div style={{ display: "flex", gap: 3, alignItems: "center" }} title={`단계 ${box}/5${misses ? ` · 틀린 횟수 ${misses}` : ""}`}>
       {[1, 2, 3, 4, 5].map((n) => (
         <div key={n} style={{ width: 7, height: 7, borderRadius: 99, background: n <= box ? colors[box] : C.line }} />
       ))}
