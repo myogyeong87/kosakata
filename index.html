@@ -299,6 +299,9 @@ function App() {
         {view === "study" && (
           <Study cards={scoped} setCards={setCards} dir={dir} back={() => setView("home")} initialQueue={alloc.keys} />
         )}
+        {view === "typing" && (
+          <Typing cards={scoped} setCards={setCards} dir={dir} back={() => setView("home")} initialQueue={alloc.keys} />
+        )}
         {view === "quiz" && (
           <Quiz cards={scoped} setCards={setCards} dir={dir} back={() => setView("home")} />
         )}
@@ -388,10 +391,15 @@ function Home({ stats, setView, dir, setDir, levels, levelFilter, setLevelFilter
       </div>
 
       <BigButton onClick={() => setView("study")} bg={C.clay} disabled={totalToday === 0} className="rise" style={{ animationDelay: ".1s" }}>
-        <div className="fr" style={{ fontSize: 20, fontWeight: 900 }}>카드 학습 시작</div>
-        <div style={{ fontSize: 13, opacity: .85, marginTop: 2 }}>
-          {totalToday > 0 ? "답을 떠올린 뒤 카드를 뒤집어 확인하세요" : "오늘 복습할 단어를 모두 끝냈어요 🎉"}
+        <div className="fr" style={{ fontSize: 20, fontWeight: 900 }}>🃏 카드 학습</div>
+        <div style={{ fontSize: 12, opacity: .85, marginTop: 2 }}>
+          {totalToday > 0 ? "빠른 복습 · 새 단어 첫 노출 · 진도 올리기" : "오늘 복습할 단어를 모두 끝냈어요 🎉"}
         </div>
+      </BigButton>
+
+      <BigButton onClick={() => setView("typing")} bg={C.teal} disabled={totalToday === 0} className="rise" style={{ animationDelay: ".12s" }}>
+        <div className="fr" style={{ fontSize: 20, fontWeight: 900 }}>✏️ 주관식 학습</div>
+        <div style={{ fontSize: 12, opacity: .85, marginTop: 2 }}>직접 타이핑 · 객관적 채점 · 진도 검증</div>
       </BigButton>
 
       <BigButton onClick={() => setView("quiz")} bg={C.paper} fg={C.ink} border className="rise" style={{ animationDelay: ".15s" }}>
@@ -514,9 +522,18 @@ function Study({ cards, setCards, dir, back, initialQueue }) {
       if (c.key !== card.key) return c;
       let box = c.box;
       const misses = (c.misses || 0) + (kind === "forgot" ? 1 : 0);
-      if (kind === "forgot") { box = 1; again = true; }
-      else if (kind === "hard") { box = Math.max(1, c.box); again = true; }
-      else { box = Math.min(5, (c.box || 0) + 1); }
+      if (kind === "forgot") {
+        // 방향별 오답 페널티: 한국→인니는 리셋, 인니→한국은 한 칸만 강등
+        box = dir === "ko-id" ? 1 : Math.max(1, (c.box || 0) - 1);
+        again = true;
+      } else if (kind === "hard") {
+        box = Math.max(1, c.box);
+        again = true;
+      } else {
+        // 방향별 정답 보상: 한국→인니(어려운 방향)는 +2
+        const gain = dir === "ko-id" ? 2 : 1;
+        box = Math.min(5, (c.box || 0) + gain);
+      }
       return { ...c, box, misses, next: t + INTERVALS[box] * DAY };
     }));
     setQueue((q) => {
@@ -533,6 +550,7 @@ function Study({ cards, setCards, dir, back, initialQueue }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <span style={{ fontSize: 13, color: C.muted }}>남은 카드 {total}개</span>
+        <span style={{ fontSize: 12, color: C.muted }}>{dir === "id-ko" ? "인니어 → 뜻" : "뜻 → 인니어 (+2점)"}</span>
         <span style={{ fontSize: 13, color: C.muted }}>오늘 {done}개 학습</span>
       </div>
 
@@ -612,6 +630,225 @@ function DoneScreen({ count, back }) {
   );
 }
 
+// ── 주관식 채점 ──────────────────────────────────────────────
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+  return dp[m][n];
+}
+
+function normAnswer(s) {
+  return s.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?~]+$/, "").trim();
+}
+
+// "부탁해요 / 도와주세요", "하나 (1)" 처럼 여러 답을 허용하는 뜻도 각각 정답으로 인정
+function answerVariants(answer) {
+  const stripParen = (s) => s.replace(/\([^)]*\)/g, "");
+  const raw = [answer, stripParen(answer), ...answer.split(/[\/,;]/), ...stripParen(answer).split(/[\/,;]/)];
+  return [...new Set(raw.map(normAnswer).filter(Boolean))];
+}
+
+function grade(input, answer) {
+  const a = normAnswer(input);
+  const variants = answerVariants(answer);
+  if (variants.includes(a)) return "correct";                         // 1단계: 완전 일치
+  for (const b of variants) {
+    if (a.replace(/\s/g, "") === b.replace(/\s/g, "")) return "ambiguous"; // 띄어쓰기만 다름
+    const threshold = Math.max(1, Math.floor(b.length * 0.3));
+    if (levenshtein(a, b) <= threshold) return "ambiguous";            // 2단계: 30% 이내 차이
+    if (a.length >= 2 && (b.includes(a) || a.includes(b))) return "ambiguous"; // 부분 포함
+    if (b.length >= 2 && b.endsWith("다") && a.startsWith(b.slice(0, -1))) return "ambiguous"; // 활용형 (먹다 → 먹어요)
+  }
+  return "wrong";                                                      // 3단계: 완전 오답
+}
+
+// 주관식은 카드 학습과 달리 오답 시 강등
+function applyResult(card, result, dir) {
+  if (result === "correct") {
+    const gain = dir === "ko-id" ? 2 : 1;
+    const box = Math.min(5, (card.box || 0) + gain);
+    return { box, next: Date.now() + INTERVALS[box] * DAY };
+  }
+  const box = dir === "ko-id" ? 1 : Math.max(1, (card.box || 0) - 1);
+  return { box, misses: (card.misses || 0) + 1, next: Date.now() + INTERVALS[box] * DAY };
+}
+
+function Typing({ cards, setCards, dir, back, initialQueue }) {
+  const [queue, setQueue] = useState(() => initialQueue || []);
+  const [done, setDone] = useState(0);
+  const [phase, setPhase] = useState("input"); // "input" | "result" | "ambiguous"
+  const [input, setInput] = useState("");
+  const [lastGrade, setLastGrade] = useState(null); // "correct" | "wrong"
+  const [stats, setStats] = useState({ correct: 0, wrong: 0, demoted: 0 });
+  const inputRef = useRef(null);
+  const timerRef = useRef(null);
+  const busyRef = useRef(false); // 엔터 연타·한글 입력 중 엔터로 두 번 채점되는 것 방지
+
+  const currentKey = queue[0];
+
+  // 카드 넘어갈 때 입력 초기화 + 포커스
+  useEffect(() => {
+    setInput("");
+    setPhase("input");
+    setLastGrade(null);
+    busyRef.current = false;
+    const t = setTimeout(() => inputRef.current && inputRef.current.focus(), 50);
+    return () => clearTimeout(t);
+  }, [currentKey]);
+
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  // 동기화 등으로 단어가 삭제됐으면 건너뛰기
+  useEffect(() => {
+    if (currentKey && !cards.some((c) => c.key === currentKey)) setQueue((q) => q.slice(1));
+  }, [currentKey, cards]);
+
+  if (queue.length === 0) return <TypingDone stats={stats} back={back} />;
+
+  const card = cards.find((c) => c.key === currentKey);
+  if (!card) return null;
+  const question = dir === "id-ko" ? card.id : card.ko;
+  const answer = dir === "id-ko" ? card.ko : card.id;
+
+  function goNext() {
+    clearTimeout(timerRef.current);
+    setQueue((q) => (q[0] === card.key ? q.slice(1) : q));
+  }
+
+  function confirm() {
+    if (busyRef.current || phase !== "input" || !input.trim()) return;
+    busyRef.current = true;
+    const result = grade(input, answer);
+    if (result === "ambiguous") setPhase("ambiguous");
+    else applyAndNext(result);
+  }
+
+  function applyAndNext(result) {
+    const changes = applyResult(card, result, dir);
+    setCards((prev) => prev.map((c) => (c.key === card.key ? { ...c, ...changes } : c)));
+    setStats((prev) => ({
+      correct: prev.correct + (result === "correct" ? 1 : 0),
+      wrong: prev.wrong + (result === "wrong" ? 1 : 0),
+      demoted: prev.demoted + (result === "wrong" && card.box > 1 ? 1 : 0),
+    }));
+    setDone((d) => d + 1);
+    setLastGrade(result);
+    setPhase("result");
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(goNext, 1200);
+  }
+
+  function onKeyDown(e) {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (phase === "input") confirm();
+    else if (phase === "result") goNext();
+  }
+
+  const ok = lastGrade === "correct";
+  const btn = { width: "100%", padding: 15, borderRadius: 16, border: "none", fontSize: 16, fontWeight: 700, cursor: "pointer" };
+
+  return (
+    <div style={{ overflowX: "hidden" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 13, color: C.muted }}>남은 {queue.length}개</span>
+        <span style={{ fontSize: 12, color: C.muted }}>{dir === "id-ko" ? "인니어 → 뜻" : "뜻 → 인니어 (+2점)"}</span>
+        <span style={{ fontSize: 13, color: C.muted }}>오늘 {done}개 완료</span>
+      </div>
+
+      <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 24, boxShadow: "0 10px 30px rgba(0,0,0,.1)",
+        padding: "22px 18px", minHeight: 150, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 14 }}>
+        <div style={{ fontSize: 12, color: C.muted, letterSpacing: 1 }}>{dir === "id-ko" ? "인도네시아어" : "뜻"}</div>
+        <div className="fr" style={{ fontSize: dir === "id-ko" ? 38 : 32, fontWeight: 900, color: C.ink, textAlign: "center", wordBreak: "keep-all", overflowWrap: "anywhere" }}>
+          {question}
+        </div>
+      </div>
+
+      <input ref={inputRef} value={input} onChange={(e) => phase === "input" && setInput(e.target.value)} onKeyDown={onKeyDown}
+        readOnly={phase !== "input"}
+        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="done"
+        placeholder={dir === "id-ko" ? "뜻을 한국어로 입력하세요" : "인도네시아어로 입력하세요"}
+        style={{ width: "100%", padding: "14px 16px", borderRadius: 14, border: `1.5px solid ${C.line}`, background: C.paper,
+          fontSize: 17, color: C.ink, fontFamily: "inherit", marginBottom: 12, outline: "none" }} />
+
+      {phase === "input" && (
+        <button onClick={confirm} disabled={!input.trim()} className="pressable"
+          style={{ ...btn, background: input.trim() ? C.ink : C.line, color: input.trim() ? C.cream : C.muted, cursor: input.trim() ? "pointer" : "default" }}>
+          확인
+        </button>
+      )}
+
+      {phase === "ambiguous" && (
+        <div className="rise" style={{ background: C.paper, border: `1.5px solid ${C.gold}`, borderRadius: 18, padding: 16 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.clayDark, marginBottom: 10 }}>🤔 비슷한데... 확인해보세요</div>
+          <AnswerLine label="정답" value={answer} strong />
+          <AnswerLine label="내 답" value={input} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 14 }}>
+            <button onClick={() => applyAndNext("correct")} className="pressable" style={{ ...btn, background: C.green, color: "#fff" }}>✅ 맞아요</button>
+            <button onClick={() => applyAndNext("wrong")} className="pressable" style={{ ...btn, background: "#fff", color: C.red, border: `1.5px solid ${C.red}` }}>❌ 틀려요</button>
+          </div>
+        </div>
+      )}
+
+      {phase === "result" && (
+        <div className="rise" style={{ background: ok ? "#E6F2EC" : "#F4DAD2", border: `1.5px solid ${ok ? C.green : C.red}`, borderRadius: 18, padding: 16 }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: ok ? C.green : C.clayDark, marginBottom: 10 }}>{ok ? "✅ 정답!" : "❌ 오답"}</div>
+          <AnswerLine label="정답" value={answer} strong />
+          <AnswerLine label="내 답" value={input} />
+          {!ok && <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>지금까지 {card.misses || 0}번 틀렸어요</div>}
+          {card.ex && <div style={{ fontSize: 13, color: C.muted, marginTop: 8, fontStyle: "italic" }}>{card.ex}</div>}
+          <button onClick={goNext} className="pressable" style={{ ...btn, marginTop: 14, background: C.ink, color: C.cream }}>다음 →</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AnswerLine({ label, value, strong }) {
+  return (
+    <div style={{ display: "flex", gap: 10, fontSize: 15, marginBottom: 4 }}>
+      <span style={{ color: C.muted, flexShrink: 0, width: 40 }}>{label}</span>
+      <span style={{ color: C.ink, fontWeight: strong ? 700 : 500, overflowWrap: "anywhere" }}>{value}</span>
+    </div>
+  );
+}
+
+function TypingDone({ stats, back }) {
+  return (
+    <div className="rise" style={{ textAlign: "center", padding: "40px 20px" }}>
+      <div style={{ fontSize: 56 }}>🎉</div>
+      <div className="fr" style={{ fontSize: 26, fontWeight: 900, color: C.teal, margin: "10px 0" }}>주관식 완료!</div>
+      <div style={{ fontSize: 16, color: C.ink, marginBottom: 6 }}>
+        정답 <b style={{ color: C.green }}>{stats.correct}</b> / 오답 <b style={{ color: C.red }}>{stats.wrong}</b>
+      </div>
+      {stats.demoted > 0 && (
+        <div style={{ color: C.muted, fontSize: 13.5 }}>강등된 단어 {stats.demoted}개 → 내일 다시 나와요</div>
+      )}
+      <button onClick={back} className="pressable"
+        style={{ padding: "14px 28px", borderRadius: 16, border: "none", background: C.clay, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer", marginTop: 24 }}>
+        홈으로
+      </button>
+    </div>
+  );
+}
+
+function makeOptions(cards, card, ans, dir) {
+  if (!card) return [];
+  const others = cards.filter((c) => c.key !== card.key).map((c) => (dir === "id-ko" ? c.ko : c.id));
+  const uniq = [...new Set(others)].filter((o) => o !== ans);
+  for (let i = uniq.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[uniq[i], uniq[j]] = [uniq[j], uniq[i]]; }
+  const opts = [ans, ...uniq.slice(0, 3)];
+  for (let i = opts.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[opts[i], opts[j]] = [opts[j], opts[i]]; }
+  return opts;
+}
+
 function Quiz({ cards, setCards, dir, back }) {
   const [order] = useState(() => {
     const due = cards.filter((c) => isDue(c, Date.now()));
@@ -622,18 +859,19 @@ function Quiz({ cards, setCards, dir, back }) {
   const [idx, setIdx] = useState(0);
   const [picked, setPicked] = useState(null);
   const [score, setScore] = useState(0);
+  const [wrongList, setWrongList] = useState([]);
 
   const card = idx < order.length ? cards.find((c) => c.key === order[idx]) : null;
   const ans = card ? (dir === "id-ko" ? card.ko : card.id) : null;
-  const options = React.useMemo(() => {
-    if (!card) return [];
-    const others = cards.filter((c) => c.key !== card.key).map((c) => (dir === "id-ko" ? c.ko : c.id));
-    const uniq = [...new Set(others)];
-    for (let i = uniq.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[uniq[i], uniq[j]] = [uniq[j], uniq[i]]; }
-    const opts = [ans, ...uniq.slice(0, 3)];
-    for (let i = opts.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[opts[i], opts[j]] = [opts[j], opts[i]]; }
-    return opts;
-  }, [idx, card]);
+  // 보기는 문제(idx)가 바뀔 때만 새로 만든다.
+  // (setCards 로 card 객체가 새로 만들어져도 보기가 다시 섞이지 않도록)
+  // 같은 렌더 안에서 바로 계산해서, 다음 문제로 넘어갈 때 이전 보기가 깜빡이지 않게 함
+  const [optState, setOptState] = useState(() => ({ idx, opts: makeOptions(cards, card, ans, dir) }));
+  let options = optState.opts;
+  if (optState.idx !== idx) {
+    options = makeOptions(cards, card, ans, dir);
+    setOptState({ idx, opts: options });
+  }
 
   if (cards.length < 4) {
     return <div style={{ textAlign: "center", padding: 30, color: C.muted }}>퀴즈는 단어가 4개 이상일 때 가능해요.</div>;
@@ -645,6 +883,19 @@ function Quiz({ cards, setCards, dir, back }) {
         <div className="fr" style={{ fontSize: 26, fontWeight: 900, color: C.teal, margin: "10px 0" }}>
           {order.length}문제 중 {score}개 정답
         </div>
+        {wrongList.length > 0 && (
+          <div style={{ textAlign: "left", marginTop: 18 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.clayDark, marginBottom: 8 }}>❌ 틀린 단어 ({wrongList.length}개)</div>
+            <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 16, padding: "4px 14px" }}>
+              {wrongList.map((w, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderTop: i ? `1px solid ${C.line}` : "none" }}>
+                  <span className="fr" style={{ fontWeight: 700, color: C.ink }}>{w.id}</span>
+                  <span style={{ color: C.muted, textAlign: "right" }}>{w.ko}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <button onClick={back} className="pressable" style={{ padding: "14px 28px", borderRadius: 16, border: "none", background: C.clay, color: "#fff", fontWeight: 700, cursor: "pointer", marginTop: 14 }}>홈으로</button>
       </div>
     );
@@ -657,6 +908,7 @@ function Quiz({ cards, setCards, dir, back }) {
     setPicked(opt);
     const correct = opt === ans;
     if (correct) setScore((s) => s + 1);
+    else setWrongList((prev) => [...prev, { id: card.id, ko: card.ko }]);
     setCards((prev) => prev.map((c) => {
       if (c.key !== card.key) return c;
       const box = correct ? Math.min(5, (c.box || 0) + 1) : 1;
@@ -723,6 +975,8 @@ function Manage({ cards, setCards, back }) {
   const [bulkMsg, setBulkMsg] = useState("");
   const [exportText, setExportText] = useState(null);
   const [copyMsg, setCopyMsg] = useState("");
+  const [progressFilter, setProgressFilter] = useState("all");
+  const [manageSort, setManageSort] = useState("recent");
   const levelRef = useRef(null);
   const bulkLevelRef = useRef(null);
 
@@ -747,6 +1001,9 @@ function Manage({ cards, setCards, back }) {
     setId(""); setKo(""); setEx("");
   }
   function remove(key) { setCards((prev) => prev.filter((c) => c.key !== key)); }
+  function resetCard(key) {
+    setCards((prev) => prev.map((c) => (c.key === key ? { ...c, box: 0, next: 0, misses: 0 } : c)));
+  }
   function changeLevel(key, newLevel) {
     setCards((prev) => prev.map((c) => (c.key === key ? { ...c, level: newLevel } : c)));
   }
@@ -809,9 +1066,34 @@ function Manage({ cards, setCards, back }) {
 
   const input = { width: "100%", padding: "12px 14px", borderRadius: 12, border: `1px solid ${C.line}`, background: C.paper, fontSize: 15, color: C.ink, marginBottom: 8, fontFamily: "inherit" };
 
+  // 레벨 이름은 전체 단어 기준 (레벨 변경 드롭다운용)
+  const allLevelNames = cards.map((c) => c.level).filter((v, i, a) => v && a.indexOf(v) === i);
+
+  // 진도 필터 + 정렬
+  const displayCards = cards
+    .filter((c) => {
+      if (progressFilter === "new") return c.box === 0;
+      if (progressFilter === "learning") return c.box >= 1 && c.box <= 2;
+      if (progressFilter === "mastered") return c.box >= 3;
+      return true;
+    })
+    .sort((a, b) => {
+      if (manageSort === "alpha") return a.id.localeCompare(b.id);
+      if (manageSort === "hard") return (b.misses || 0) - (a.misses || 0);
+      return 0; // 최근 추가순: 새 단어는 배열 앞에 추가되므로 원래 순서 유지
+    });
+
   const grouped = {};
-  for (const c of cards) { (grouped[c.level] = grouped[c.level] || []).push(c); }
-  const allLevelNames = Object.keys(grouped);
+  for (const c of displayCards) { (grouped[c.level] = grouped[c.level] || []).push(c); }
+  const shownLevelNames = Object.keys(grouped);
+
+  const chip = (active) => ({
+    flexShrink: 0, padding: "6px 12px", borderRadius: 999, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap",
+    border: `1px solid ${active ? C.teal : C.line}`, background: active ? C.teal : C.paper,
+    color: active ? "#fff" : C.muted, fontWeight: active ? 700 : 500,
+  });
+  const FILTERS = [["all", "전체"], ["new", "새 단어"], ["learning", "학습 중"], ["mastered", "학습 완료"]];
+  const SORTS = [["recent", "최근 추가순"], ["alpha", "가나다순"], ["hard", "어려운 순"]];
 
   return (
     <div>
@@ -882,7 +1164,27 @@ function Manage({ cards, setCards, back }) {
         </div>
       )}
 
-      {allLevelNames.map((lv) => (
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 6 }}>
+          {FILTERS.map(([k, label]) => (
+            <button key={k} onClick={() => setProgressFilter(k)} className="pressable" style={chip(progressFilter === k)}>{label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+          {SORTS.map(([k, label]) => (
+            <button key={k} onClick={() => setManageSort(k)} className="pressable" style={chip(manageSort === k)}>{label}</button>
+          ))}
+        </div>
+        {progressFilter !== "all" && (
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>{displayCards.length}개 표시 중</div>
+        )}
+      </div>
+
+      {displayCards.length === 0 && (
+        <div style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: "20px 0" }}>해당하는 단어가 없어요.</div>
+      )}
+
+      {shownLevelNames.map((lv) => (
         <div key={lv} style={{ marginBottom: 18 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <div className="fr" style={{ fontWeight: 900, fontSize: 16, color: C.teal }}>{lv}</div>
@@ -904,6 +1206,10 @@ function Manage({ cards, setCards, back }) {
                     </select>
                   )}
                   <BoxPip box={c.box} misses={c.misses} />
+                  <button onClick={() => resetCard(c.key)} title="이 단어 진도 초기화"
+                    style={{ background: "none", border: "none", color: C.muted, fontSize: 13, cursor: "pointer", padding: 4, opacity: 0.6 }}>
+                    🔄
+                  </button>
                   <button onClick={() => remove(c.key)} style={{ background: "none", border: "none", color: C.muted, fontSize: 18, cursor: "pointer", padding: 4 }}>✕</button>
                 </div>
               </div>
