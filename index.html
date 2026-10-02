@@ -505,6 +505,8 @@ function Study({ cards, setCards, dir, back, initialQueue }) {
   const [queue, setQueue] = useState(() => initialQueue || []);
   const [revealed, setRevealed] = useState(false);
   const [done, setDone] = useState(0);
+  // 이번 회차에 틀리거나 애매했던 단어 → 다시 나올 때는 연습만 (진도 미반영)
+  const [practiced, setPracticed] = useState(() => new Set());
 
   if (queue.length === 0) {
     return <DoneScreen count={done} back={back} />;
@@ -514,34 +516,37 @@ function Study({ cards, setCards, dir, back, initialQueue }) {
   const front = dir === "id-ko" ? card.id : card.ko;
   const backTxt = dir === "id-ko" ? card.ko : card.id;
   const frontLabel = dir === "id-ko" ? "인도네시아어" : "뜻";
+  const isPractice = practiced.has(card.key);
 
   function rate(kind) {
     const t = Date.now();
-    let again = false;
-    setCards((prev) => prev.map((c) => {
-      if (c.key !== card.key) return c;
-      let box = c.box;
-      const misses = (c.misses || 0) + (kind === "forgot" ? 1 : 0);
-      if (kind === "forgot") {
-        // 방향별 오답 페널티: 한국→인니는 리셋, 인니→한국은 한 칸만 강등
-        box = dir === "ko-id" ? 1 : Math.max(1, (c.box || 0) - 1);
-        again = true;
-      } else if (kind === "hard") {
-        box = Math.max(1, c.box);
-        again = true;
-      } else {
-        // 방향별 정답 보상: 한국→인니(어려운 방향)는 +2
-        const gain = dir === "ko-id" ? 2 : 1;
-        box = Math.min(5, (c.box || 0) + gain);
-      }
-      return { ...c, box, misses, next: t + INTERVALS[box] * DAY };
-    }));
+    const again = kind !== "easy";
+    if (!isPractice) {
+      setCards((prev) => prev.map((c) => {
+        if (c.key !== card.key) return c;
+        let box = c.box;
+        const misses = (c.misses || 0) + (kind === "forgot" ? 1 : 0);
+        if (kind === "forgot") {
+          // 방향별 오답 페널티: 한국→인니는 리셋, 인니→한국은 한 칸만 강등
+          box = dir === "ko-id" ? 1 : Math.max(1, (c.box || 0) - 1);
+        } else if (kind === "hard") {
+          box = Math.max(1, c.box);
+        } else {
+          // 방향별 정답 보상: 한국→인니(어려운 방향)는 +2
+          const gain = dir === "ko-id" ? 2 : 1;
+          box = Math.min(5, (c.box || 0) + gain);
+        }
+        return { ...c, box, misses, next: t + INTERVALS[box] * DAY };
+      }));
+      if (again) setPracticed((s) => new Set(s).add(card.key));
+      setDone((d) => d + 1);
+    }
     setQueue((q) => {
+      if (q[0] !== card.key) return q;
       const rest = q.slice(1);
       return again ? [...rest, card.key] : rest;
     });
     setRevealed(false);
-    setDone((d) => d + 1);
   }
 
   const total = queue.length;
@@ -554,6 +559,7 @@ function Study({ cards, setCards, dir, back, initialQueue }) {
         <span style={{ fontSize: 13, color: C.muted }}>오늘 {done}개 학습</span>
       </div>
 
+      {isPractice && <PracticeBadge />}
       <div className="flip3d" style={{ marginBottom: 18 }} onClick={() => !revealed && setRevealed(true)}>
         <div className={"flipinner" + (revealed ? " flipped" : "")} style={{ height: 300 }}>
           <div className="face" style={cardFace(C.paper)}>
@@ -586,12 +592,20 @@ function Study({ cards, setCards, dir, back, initialQueue }) {
         <div>
           <div style={{ fontSize: 13, color: C.muted, textAlign: "center", marginBottom: 8 }}>얼마나 잘 떠올렸나요?</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            <RateBtn onClick={() => rate("forgot")} bg="#fff" border={C.red} fg={C.red}>모르겠어요<small>다시 자주</small></RateBtn>
+            <RateBtn onClick={() => rate("forgot")} bg="#fff" border={C.red} fg={C.red}>모르겠어요<small>{isPractice ? "한 번 더" : "다시 자주"}</small></RateBtn>
             <RateBtn onClick={() => rate("hard")} bg="#fff" border={C.gold} fg={C.clayDark}>애매해요<small>한 번 더</small></RateBtn>
-            <RateBtn onClick={() => rate("easy")} bg={C.green} border={C.green} fg="#fff">알아요!<small>나중에</small></RateBtn>
+            <RateBtn onClick={() => rate("easy")} bg={C.green} border={C.green} fg="#fff">알아요!<small>{isPractice ? "연습 끝" : "나중에"}</small></RateBtn>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function PracticeBadge() {
+  return (
+    <div style={{ fontSize: 12.5, color: C.clayDark, background: "#FBEBD0", border: `1px solid ${C.gold}`, borderRadius: 10, padding: "7px 12px", marginBottom: 10, textAlign: "center", fontWeight: 600 }}>
+      🔁 다시 연습 · 진도에는 반영되지 않아요
     </div>
   );
 }
@@ -690,6 +704,11 @@ function Typing({ cards, setCards, dir, back, initialQueue }) {
   const inputRef = useRef(null);
   const timerRef = useRef(null);
   const busyRef = useRef(false); // 엔터 연타·한글 입력 중 엔터로 두 번 채점되는 것 방지
+  // 이번 회차에 틀린 단어 → 맨 뒤에서 한 번 더 연습 (진도 미반영)
+  const [practiced, setPracticed] = useState(() => new Set());
+  const [turn, setTurn] = useState(0); // 같은 단어가 연달아 나와도 입력칸이 초기화되도록
+  const requeueRef = useRef(false);
+  const advancedRef = useRef(false);
 
   const currentKey = queue[0];
 
@@ -699,9 +718,10 @@ function Typing({ cards, setCards, dir, back, initialQueue }) {
     setPhase("input");
     setLastGrade(null);
     busyRef.current = false;
+    advancedRef.current = false;
     const t = setTimeout(() => inputRef.current && inputRef.current.focus(), 50);
     return () => clearTimeout(t);
-  }, [currentKey]);
+  }, [currentKey, turn]);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
@@ -716,10 +736,20 @@ function Typing({ cards, setCards, dir, back, initialQueue }) {
   if (!card) return null;
   const question = dir === "id-ko" ? card.id : card.ko;
   const answer = dir === "id-ko" ? card.ko : card.id;
+  const isPractice = practiced.has(card.key);
 
   function goNext() {
     clearTimeout(timerRef.current);
-    setQueue((q) => (q[0] === card.key ? q.slice(1) : q));
+    if (advancedRef.current) return;
+    advancedRef.current = true;
+    const again = requeueRef.current;
+    requeueRef.current = false;
+    setQueue((q) => {
+      if (q[0] !== card.key) return q;
+      const rest = q.slice(1);
+      return again ? [...rest, card.key] : rest;
+    });
+    setTurn((t) => t + 1);
   }
 
   function confirm() {
@@ -739,14 +769,19 @@ function Typing({ cards, setCards, dir, back, initialQueue }) {
   }
 
   function applyAndNext(result, autoNext = true) {
-    const changes = applyResult(card, result, dir);
-    setCards((prev) => prev.map((c) => (c.key === card.key ? { ...c, ...changes } : c)));
-    setStats((prev) => ({
-      correct: prev.correct + (result === "correct" ? 1 : 0),
-      wrong: prev.wrong + (result === "wrong" ? 1 : 0),
-      demoted: prev.demoted + (result === "wrong" && card.box > 1 ? 1 : 0),
-    }));
-    setDone((d) => d + 1);
+    // 진도·통계는 첫 시도만 반영. 다시 연습에서는 맞혀도 단계가 오르지 않음
+    if (!isPractice) {
+      const changes = applyResult(card, result, dir);
+      setCards((prev) => prev.map((c) => (c.key === card.key ? { ...c, ...changes } : c)));
+      setStats((prev) => ({
+        correct: prev.correct + (result === "correct" ? 1 : 0),
+        wrong: prev.wrong + (result === "wrong" ? 1 : 0),
+        demoted: prev.demoted + (result === "wrong" && card.box > 1 ? 1 : 0),
+      }));
+      setDone((d) => d + 1);
+      if (result === "wrong") setPracticed((s) => new Set(s).add(card.key));
+    }
+    requeueRef.current = result === "wrong";
     setLastGrade(result);
     setPhase("result");
     clearTimeout(timerRef.current);
@@ -770,6 +805,8 @@ function Typing({ cards, setCards, dir, back, initialQueue }) {
         <span style={{ fontSize: 12, color: C.muted }}>{dir === "id-ko" ? "인니어 → 뜻" : "뜻 → 인니어 (+2점)"}</span>
         <span style={{ fontSize: 13, color: C.muted }}>오늘 {done}개 완료</span>
       </div>
+
+      {isPractice && <PracticeBadge />}
 
       <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 24, boxShadow: "0 10px 30px rgba(0,0,0,.1)",
         padding: "22px 18px", minHeight: 150, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 14 }}>
@@ -816,7 +853,8 @@ function Typing({ cards, setCards, dir, back, initialQueue }) {
           <div style={{ fontSize: 18, fontWeight: 800, color: ok ? C.green : C.clayDark, marginBottom: 10 }}>{ok ? "✅ 정답!" : input ? "❌ 오답" : "📖 정답을 외워두세요"}</div>
           <AnswerLine label="정답" value={answer} strong />
           <AnswerLine label="내 답" value={input || "(모름)"} />
-          {!ok && <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>지금까지 {card.misses || 0}번 틀렸어요</div>}
+          {!ok && <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>지금까지 {card.misses || 0}번 틀렸어요 · 🔁 이번 회차 끝에 한 번 더 나와요</div>}
+          {ok && isPractice && <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>연습 완료! (진도에는 반영되지 않아요)</div>}
           {card.ex && <div style={{ fontSize: 13, color: C.muted, marginTop: 8, fontStyle: "italic" }}>{card.ex}</div>}
           <button onClick={goNext} className="pressable" style={{ ...btn, marginTop: 14, background: C.ink, color: C.cream }}>다음 →</button>
         </div>
